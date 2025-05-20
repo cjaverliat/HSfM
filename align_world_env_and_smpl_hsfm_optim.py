@@ -1239,32 +1239,34 @@ def main(
     sam2_dir = bbox_dir.replace("json_data", "mask_data")
     sam2_mask_params_dict = get_mask_init_data(sam2_dir, frame_idx_list)
     sam2_mask_params_dict_transformed = {}
-    for idx, frame_idx in enumerate(frame_idx_list):
-        sam2_mask = sam2_mask_params_dict[frame_idx]
-        affine_matrix = affine_matrix_list[idx]
 
-        # Convert 2x3 affine matrix to 3x3 homogeneous form
-        affine_matrix_homog = np.vstack([affine_matrix, [0, 0, 1]])
-        # Get inverse transform
-        affine_matrix_inv = np.linalg.inv(affine_matrix_homog)
-        # Extract the 2x3 portion needed for cv2.warpAffine
-        affine_matrix_inv_2x3 = affine_matrix_inv[:2, :]
+    if len(sam2_mask_params_dict) > 0:
+        for idx, frame_idx in enumerate(frame_idx_list):
+            sam2_mask = sam2_mask_params_dict[frame_idx]
+            affine_matrix = affine_matrix_list[idx]
 
-        # Apply inverse transform using cv2.warpAffine
-        sam2_mask_transformed = cv2.warpAffine(
-            sam2_mask,
-            affine_matrix_inv_2x3,
-            (rgbimg_list[idx].shape[1], rgbimg_list[idx].shape[0]),
-            flags=cv2.INTER_NEAREST,
-        )
+            # Convert 2x3 affine matrix to 3x3 homogeneous form
+            affine_matrix_homog = np.vstack([affine_matrix, [0, 0, 1]])
+            # Get inverse transform
+            affine_matrix_inv = np.linalg.inv(affine_matrix_homog)
+            # Extract the 2x3 portion needed for cv2.warpAffine
+            affine_matrix_inv_2x3 = affine_matrix_inv[:2, :]
 
-        frame_name = frame_names[idx]
-        sam2_mask_params_dict_transformed[frame_name] = sam2_mask_transformed
+            # Apply inverse transform using cv2.warpAffine
+            sam2_mask_transformed = cv2.warpAffine(
+                sam2_mask,
+                affine_matrix_inv_2x3,
+                (rgbimg_list[idx].shape[1], rgbimg_list[idx].shape[0]),
+                flags=cv2.INTER_NEAREST,
+            )
 
-        # TEMP Vis
-        # rgb = rgbimg_list[idx]
-        # rgb[sam2_mask_transformed > 0] = 0
-        # cv2.imwrite(osp.join(vis_output_path, f'frame_{frame_name}_sam2_mask.png'), rgb[..., ::-1] * 255)
+            frame_name = frame_names[idx]
+            sam2_mask_params_dict_transformed[frame_name] = sam2_mask_transformed
+
+            # TEMP Vis
+            # rgb = rgbimg_list[idx]
+            # rgb[sam2_mask_transformed > 0] = 0
+            # cv2.imwrite(osp.join(vis_output_path, f'frame_{frame_name}_sam2_mask.png'), rgb[..., ::-1] * 255)
 
     """ Rearrange the data for optimization """
     print(
@@ -1926,10 +1928,12 @@ def main(
     # Save output
     total_output = {}
     total_output["hsfm_places_cameras"] = parse_to_save_data(scene, frame_names)
-    for frame_name in total_output["hsfm_places_cameras"].keys():
-        total_output["hsfm_places_cameras"][frame_name]["sam2_mask"] = (
-            sam2_mask_params_dict_transformed[frame_name]
-        )
+
+    if len(sam2_mask_params_dict_transformed) > 0:
+        for frame_name in total_output["hsfm_places_cameras"].keys():
+            total_output["hsfm_places_cameras"][frame_name]["sam2_mask"] = (
+                sam2_mask_params_dict_transformed[frame_name]
+            )
 
     if body_model_name == "smpl":
         for person_id in human_params.keys():
