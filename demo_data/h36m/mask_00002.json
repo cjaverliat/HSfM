@@ -1,0 +1,13 @@
+{
+    "labels": {
+        "1": {
+            "instance_id": 1,
+            "class_name": "person",
+            "x1": 411,
+            "y1": 138,
+            "x2": 555,
+            "y2": 601,
+            "logit": 0.0
+        }
+    }
+}
