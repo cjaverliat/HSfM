@@ -9,39 +9,66 @@ import cv2
 import numpy as np
 import tyro
 import pickle
-
+import orjson
 from tqdm import tqdm
 from collections import defaultdict
 from pathlib import Path
+from time import perf_counter
 
 from hmr2.configs import CACHE_DIR_4DHUMANS
-from hmr2.models import download_models, load_hmr2, DEFAULT_CHECKPOINT
+from hmr2.models import download_models, DEFAULT_CHECKPOINT, check_smpl_exists, HMR2
 from hmr2.utils import recursive_to
 from hmr2.datasets.vitdet_dataset import ViTDetDataset
 from hmr2.utils.renderer import Renderer, cam_crop_to_full
 
 LIGHT_BLUE = (0.65098039, 0.74117647, 0.85882353)
 
+def load_hmr2(checkpoint_path=DEFAULT_CHECKPOINT, config_path=""):
+    from pathlib import Path
+    from hmr2.configs import get_config
+    if config_path == "":
+        model_cfg = str(Path(checkpoint_path).parent.parent / 'model_config.yaml')
+    else:
+        model_cfg = config_path
+    model_cfg = get_config(model_cfg, update_cachedir=True)
+
+    # Override some config values, to crop bbox correctly
+    if (model_cfg.MODEL.BACKBONE.TYPE == 'vit') and ('BBOX_SHAPE' not in model_cfg.MODEL):
+        model_cfg.defrost()
+        assert model_cfg.MODEL.IMAGE_SIZE == 256, f"MODEL.IMAGE_SIZE ({model_cfg.MODEL.IMAGE_SIZE}) should be 256 for ViT backbone"
+        model_cfg.MODEL.BBOX_SHAPE = [192,256]
+        model_cfg.freeze()
+
+    # Ensure SMPL model exists
+    check_smpl_exists()
+
+    model = HMR2.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
+    return model, model_cfg
 
 def main(
-    checkpoint: str = DEFAULT_CHECKPOINT,
+    model_checkpoint: str = DEFAULT_CHECKPOINT,
+    model_config: str = "",
     img_dir: str = "./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01",
     bbox_dir: str = "./demo_data/input_masks/arthur_tyler_pass_by_nov20/cam01/json_data",
     output_dir: str = "./demo_data/input_3d_meshes/arthur_tyler_pass_by_nov20/cam01",
-    batch_size: int = 64,
+    batch_size: int = 1,
     person_ids: list = [
         1,
     ],
+    timing_info_dir: str = "./demo_output/timing_info",
     vis: bool = False,
 ):
-    # Download and load checkpoints
-    download_models(CACHE_DIR_4DHUMANS)
-    model, model_cfg = load_hmr2(checkpoint)
-
-    # Setup HMR2.0 model
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    # Download checkpoints
+    download_models(CACHE_DIR_4DHUMANS)
+
+    load_model_start_time = perf_counter()
+    # Setup HMR2.0 model
+    model, model_cfg = load_hmr2(model_checkpoint, model_config)
     model = model.to(device)
     model.eval()
+    load_model_end_time = perf_counter()
 
     # Setup the renderer
     renderer = Renderer(model_cfg, faces=model.smpl.faces)
@@ -50,6 +77,7 @@ def main(
     output_dir = os.path.join(output_dir, os.path.basename(img_dir))
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    load_images_start_time = perf_counter()
     # Get all demo images that end with .jpg or .png
     img_paths = [img for img in Path(img_dir).glob("*.jpg")]
     if len(img_paths) == 0:
@@ -108,18 +136,35 @@ def main(
         dataset_list.append(dataset)
 
     concat_dataset = torch.utils.data.ConcatDataset(dataset_list)
+    load_images_end_time = perf_counter()
+
     dataloader = torch.utils.data.DataLoader(
         concat_dataset, batch_size=batch_size, shuffle=False, num_workers=0
     )
+
+    timing_info = {
+        "load_model_time": load_model_end_time - load_model_start_time,
+        "load_images_time": load_images_end_time - load_images_start_time,
+        "batch": [],
+    }
 
     print("Running HMR2.0...")
     result_dict = defaultdict(
         dict
     )  # key: frame_idx, value: dictionary with keys: 'all_verts', 'all_cam_t'
     for batch_idx, batch in enumerate(tqdm(dataloader)):
+        inference_start_time = perf_counter()
         batch = recursive_to(batch, device)
         with torch.no_grad():
             out = model(batch)
+        inference_end_time = perf_counter()
+
+        batch_timing_info = {
+            "batch_idx": batch_idx,
+            "batch_size": batch_size,
+            "inference_time": inference_end_time - inference_start_time,
+        }
+        timing_info["batch"].append(batch_timing_info)
 
         pred_cam = out["pred_cam"]
         box_center = batch["box_center"].float()
@@ -164,6 +209,7 @@ def main(
                 result_dict[frame_idx][person_id]["img_size"] = img_size[n].tolist()
 
     print("Saving results...")
+    save_start_time = perf_counter()
     # Save the result
     for frame_idx in sorted(result_dict.keys()):
         frame_result_save_path = os.path.join(
@@ -171,6 +217,16 @@ def main(
         )
         with open(frame_result_save_path, "wb") as f:
             pickle.dump(result_dict[frame_idx], f)
+    save_end_time = perf_counter()
+
+    timing_info["save_time"] = save_end_time - save_start_time
+
+    with open(os.path.join(timing_info_dir, "smpl_hmr2_timing_info.json"), "wb") as f:
+        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
+
+    print(
+        f"Timing info saved to {os.path.join(timing_info_dir, 'smpl_hmr2_timing_info.json')}"
+    )
 
     # Render front view
     if vis:

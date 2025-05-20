@@ -10,11 +10,14 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+import orjson
 
 from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple, Dict
 from mmpose.apis import inference_top_down_pose_model, init_pose_model, vis_pose_result
+
+from time import perf_counter
 
 os.environ["PYOPENGL_PLATFORM"] = "egl"
 
@@ -119,10 +122,13 @@ def main(
     output_dir: str = "./demo_data/input_2d_poses/arthur_tyler_pass_by_nov20/cam01",
     model_config: str = "./configs/vitpose/ViTPose_huge_wholebody_256x192.py",
     model_checkpoint: str = "./checkpoints/vitpose_huge_wholebody.pth",
+    timing_info_dir: str = "./demo_output/timing_info",
     vis: bool = False,
 ):
     # Load the model
+    load_model_start_time = perf_counter()
     model = ViTPoseModel(model_config=model_config, model_checkpoint=model_checkpoint)
+    load_model_end_time = perf_counter()
 
     # Pose estimation configuration
     box_score_threshold = 0.5
@@ -133,11 +139,18 @@ def main(
     output_dir = os.path.join(output_dir, os.path.basename(img_dir))
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    timing_info = {
+        "model_loading_time": load_model_end_time - load_model_start_time,
+        "images": []
+    }
+
     # Run per image
     img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
     if img_path_list == []:
         img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.png")))
-    for _, img_path in tqdm(enumerate(img_path_list), total=len(img_path_list)):
+
+    for img_idx, img_path in tqdm(enumerate(img_path_list), total=len(img_path_list)):
+        load_data_start_time = perf_counter()
         img_idx = int(os.path.splitext(os.path.basename(img_path))[0].split("_")[-1])
         image = cv2.imread(img_path)
         det_result_path = os.path.join(bbox_dir, f"mask_{img_idx:05d}.json")
@@ -162,9 +175,13 @@ def main(
             bboxes_sum = sum([bbox["bbox"][:4].sum() for bbox in bboxes])
             if bboxes_sum == 0:
                 continue
+        load_data_end_time = perf_counter()
 
+        model_inference_start_time = perf_counter()
         out = model.predict_pose(image, bboxes, box_score_threshold)
+        model_inference_end_time = perf_counter()
 
+        save_start_time = perf_counter()
         # out: List[Dict[str, np.ndarray]]; keys: bbox, keypoints. values are numpy arrays
         # convert values to lists
         save_out = {}
@@ -186,6 +203,26 @@ def main(
             vis_out_path = os.path.join(output_dir, "vis", f"pose_{img_idx:05d}.jpg")
             Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
             cv2.imwrite(vis_out_path, vis_out)
+
+        save_end_time = perf_counter()
+
+        img_timing_info = {
+            "img_idx": img_idx,
+            "img_path": img_path,
+            "load_data_time": load_data_end_time - load_data_start_time,
+            "model_inference_time": model_inference_end_time
+            - model_inference_start_time,
+            "save_time": save_end_time - save_start_time,
+        }
+
+        timing_info["images"].append(img_timing_info)
+
+    timing_info_file = os.path.join(timing_info_dir, "pose2d_vitpose_timing_info.json")
+    os.makedirs(timing_info_dir, exist_ok=True)
+    with open(timing_info_file, "wb") as f:
+        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
+
+    print(f"Timing info saved to {timing_info_file}")
 
 
 if __name__ == "__main__":

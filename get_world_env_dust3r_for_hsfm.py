@@ -11,7 +11,7 @@ import pickle
 import tyro
 import PIL
 import cv2
-
+import orjson
 from pathlib import Path
 
 from dust3r.inference import inference
@@ -19,6 +19,8 @@ from dust3r.image_pairs import make_pairs
 from dust3r.utils.image import load_images
 from dust3r.utils.device import to_numpy
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
+
+from time import perf_counter
 
 
 def transform_keypoints(homogeneous_keypoints: np.ndarray, affine_matrix: np.ndarray):
@@ -216,6 +218,7 @@ def main(
     model_path: str = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
     out_pkl_dir: str = "./demo_output/input_dust3r",
     img_dir: str = "./demo_data/input_images/bww_stairs_nov17",
+    timing_info_dir: str = "./demo_output/timing_info",
 ):
     # parameters
     device = "cuda"
@@ -232,11 +235,14 @@ def main(
     winsize = 1
     refid = 0
 
+    load_model_start_time = perf_counter()
     # Load your model here
     from dust3r.model import AsymmetricCroCo3DStereo
 
     model = AsymmetricCroCo3DStereo.from_pretrained(model_path).to(device)
+    load_model_end_time = perf_counter()
 
+    inference_start_time = perf_counter()
     (
         rgbimg,
         intrinsics,
@@ -259,6 +265,11 @@ def main(
         winsize,
         refid,
     )
+    inference_end_time = perf_counter()
+    timing_info = {
+        "loading_time": load_model_end_time - load_model_start_time,
+        "inference_time": inference_end_time - inference_start_time,
+    }
 
     # Save the results as a pickle file
     results = {}
@@ -287,6 +298,13 @@ def main(
         pickle.dump(total_output, f)
 
     print(f"Results saved to {output_file}")
+
+    timing_info_file = os.path.join(timing_info_dir, "world_env_dust3r_timing_info.json")
+    os.makedirs(timing_info_dir, exist_ok=True)
+    with open(timing_info_file, "wb") as f:
+        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
+
+    print(f"Timing info saved to {timing_info_file}")
 
 
 if __name__ == "__main__":

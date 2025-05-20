@@ -10,6 +10,8 @@ import smplx
 import time
 import tqdm
 import json
+import orjson
+import os
 
 from typing import List
 from datetime import datetime
@@ -29,6 +31,8 @@ from joint_names import (
     COCO_MAIN_BODY_SKELETON,
     SMPL_45_KEYPOINTS,
 )
+
+from time import perf_counter
 
 coco_main_body_end_joint_idx = COCO_WHOLEBODY_KEYPOINTS.index("right_heel")
 coco_main_body_joint_idx = list(range(coco_main_body_end_joint_idx + 1))
@@ -1153,6 +1157,7 @@ def main(
         1,
     ],
     body_model_name: str = "smplx",
+    timing_info_dir: str = "./demo_output/timing_info",
     vis: bool = False,
 ):
     """
@@ -1211,10 +1216,14 @@ def main(
         + "\033[0m"
         + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
+
+    data_load_start_time = perf_counter()
     # load the initial world environment
     with open(world_env_path, "rb") as f:
         world_env = pickle.load(f)
+    data_load_end_time = perf_counter()
 
+    data_preparation_start_time = perf_counter()
     dust3r_network_output = world_env["dust3r_network_output"]
     dust3r_ga_output = world_env["dust3r_ga_output"]
 
@@ -1722,6 +1731,7 @@ def main(
     # 3rd stage; ex) stage 3 is from 60% to 100%
     stage3_iter = list(range(int(niter * stage3_start_idx_percentage), niter))
     # Given the number of iterations, run the optimizer while forwarding the scene with the current parameters to get the loss
+    data_preparation_end_time = perf_counter()
 
     """ Start the optimization """
     print(
@@ -1744,6 +1754,8 @@ def main(
         + f"Stage 3: {stage3_start_idx_percentage * 100}% to 100%"
         + "\033[0m"
     )
+
+    optimization_start_time = perf_counter()
     with tqdm.tqdm(total=niter) as bar:
         while bar.n < bar.total:
             # Set optimizer
@@ -1920,11 +1932,14 @@ def main(
                         img[:, :, ::-1],
                     )
 
+    optimization_end_time = perf_counter()
+
     print("Final losses:", " ".join([f"{k}={v.item():g}" for k, v in losses.items()]))
     print(
         f"Time taken: human_loss={human_loss_timer.total_time:g}s, scene_loss={scene_loss_timer.total_time:g}s, backward={gradient_timer.total_time:g}s"
     )
 
+    save_start_time = perf_counter()
     # Save output
     total_output = {}
     total_output["hsfm_places_cameras"] = parse_to_save_data(scene, frame_names)
@@ -1953,6 +1968,20 @@ def main(
     print("Saving to ", osp.join(out_dir, f"{output_name}.pkl"))
     with open(osp.join(out_dir, f"{output_name}.pkl"), "wb") as f:
         pickle.dump(total_output, f)
+    save_end_time = perf_counter()
+
+    timing_info = {
+        "data_load_time": data_load_end_time - data_load_start_time,
+        "data_preparation_time": data_preparation_end_time
+        - data_preparation_start_time,
+        "optimization_time": optimization_end_time - optimization_start_time,
+        "save_time": save_end_time - save_start_time,
+    }
+
+    with open(os.path.join(timing_info_dir, "timing_info.json"), "wb") as f:
+        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
+
+    print(f"Timing info saved to {os.path.join(timing_info_dir, 'timing_info.json')}")
 
     if vis:
         show_optimization_results(

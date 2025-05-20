@@ -25,16 +25,6 @@ python get_world_env_dust3r_for_hsfm.py \
     --img-dir "$IMG_DIR" \
     --out-pkl-dir "$OUT_DIR"
 
-# python vis_viser_dust3r.py \
-#     --world-env-pkl "$OUT_DIR/$IMG_DIR_NAME/dust3r_reconstruction_results_${IMG_DIR_NAME}.pkl" \
-#     --world_scale_factor 5.0 \
-#     --conf-thr 1.5
-
-# python get_sam2_for_hsfm.py \
-#     --img-dir "$IMG_DIR" \
-#     --output-dir "$OUT_DIR" \
-#     $VIS
-
 python get_pose2d_vitpose_for_hsfm.py \
     --img-dir "$IMG_DIR" \
     --bbox-dir "$IMG_DIR" \
