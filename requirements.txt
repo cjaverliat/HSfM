@@ -1,7 +1,14 @@
-viser==0.2.19
+viser
 tyro
 supervision
 transformers
 smplx==0.1.28
 git+https://github.com/mattloper/chumpy
+git+https://github.com/hongsukchoi/dust3r.git
+git+https://github.com/hongsukchoi/croco.git
+git+https://github.com/hongsukchoi/4D-Humans.git
 numpy==1.24.4
+joblib
+omegaconf
+torch
+torchvision
