@@ -17,14 +17,13 @@ pip install pyrender
 import os
 import tyro
 import time
-import glob
 import json
 import pickle
 from tqdm import tqdm
 from pathlib import Path
 from collections import defaultdict
 
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
+os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 import trimesh
 import pyrender
@@ -32,11 +31,23 @@ import numpy as np
 import torch
 import cv2
 
-from wilor_mini.pipelines.wilor_hand_pose3d_estimation_pipeline import WiLorHandPose3dEstimationPipeline
+from wilor_mini.pipelines.wilor_hand_pose3d_estimation_pipeline import (
+    WiLorHandPose3dEstimationPipeline,
+)
 from joint_names import COCO_WHOLEBODY_KEYPOINTS
 
-coco_wholebody_right_hand_joint_indices = list(range(COCO_WHOLEBODY_KEYPOINTS.index('right_hand_root'), COCO_WHOLEBODY_KEYPOINTS.index('right_pinky') + 1))
-coco_wholebody_left_hand_joint_indices = list(range(COCO_WHOLEBODY_KEYPOINTS.index('left_hand_root'), COCO_WHOLEBODY_KEYPOINTS.index('left_pinky') + 1))
+coco_wholebody_right_hand_joint_indices = list(
+    range(
+        COCO_WHOLEBODY_KEYPOINTS.index("right_hand_root"),
+        COCO_WHOLEBODY_KEYPOINTS.index("right_pinky") + 1,
+    )
+)
+coco_wholebody_left_hand_joint_indices = list(
+    range(
+        COCO_WHOLEBODY_KEYPOINTS.index("left_hand_root"),
+        COCO_WHOLEBODY_KEYPOINTS.index("left_pinky") + 1,
+    )
+)
 LIGHT_PURPLE = (0.25098039, 0.274117647, 0.65882353)
 
 
@@ -64,10 +75,12 @@ def create_raymond_lights():
 
         matrix = np.eye(4)
         matrix[:3, :3] = np.c_[x, y, z]
-        nodes.append(pyrender.Node(
-            light=pyrender.DirectionalLight(color=np.ones(3), intensity=1.0),
-            matrix=matrix
-        ))
+        nodes.append(
+            pyrender.Node(
+                light=pyrender.DirectionalLight(color=np.ones(3), intensity=1.0),
+                matrix=matrix,
+            )
+        )
 
     return nodes
 
@@ -157,7 +170,6 @@ def rotz(theta):
 
 
 class Renderer:
-
     def __init__(self, faces: np.array):
         """
         Wrapper around the pyrender renderer to render MANO meshes.
@@ -167,66 +179,81 @@ class Renderer:
         """
 
         # add faces that make the hand mesh watertight
-        faces_new = np.array([[92, 38, 234],
-                              [234, 38, 239],
-                              [38, 122, 239],
-                              [239, 122, 279],
-                              [122, 118, 279],
-                              [279, 118, 215],
-                              [118, 117, 215],
-                              [215, 117, 214],
-                              [117, 119, 214],
-                              [214, 119, 121],
-                              [119, 120, 121],
-                              [121, 120, 78],
-                              [120, 108, 78],
-                              [78, 108, 79]])
+        faces_new = np.array(
+            [
+                [92, 38, 234],
+                [234, 38, 239],
+                [38, 122, 239],
+                [239, 122, 279],
+                [122, 118, 279],
+                [279, 118, 215],
+                [118, 117, 215],
+                [215, 117, 214],
+                [117, 119, 214],
+                [214, 119, 121],
+                [119, 120, 121],
+                [121, 120, 78],
+                [120, 108, 78],
+                [78, 108, 79],
+            ]
+        )
         faces = np.concatenate([faces, faces_new], axis=0)
         self.faces = faces
         self.faces_left = self.faces[:, [0, 2, 1]]
 
-    def vertices_to_trimesh(self, vertices, camera_translation, mesh_base_color=(1.0, 1.0, 0.9),
-                            rot_axis=[1, 0, 0], rot_angle=0, is_right=1):
+    def vertices_to_trimesh(
+        self,
+        vertices,
+        camera_translation,
+        mesh_base_color=(1.0, 1.0, 0.9),
+        rot_axis=[1, 0, 0],
+        rot_angle=0,
+        is_right=1,
+    ):
         # material = pyrender.MetallicRoughnessMaterial(
         #     metallicFactor=0.0,
         #     alphaMode='OPAQUE',
         #     baseColorFactor=(*mesh_base_color, 1.0))
         vertex_colors = np.array([(*mesh_base_color, 1.0)] * vertices.shape[0])
         if is_right:
-            mesh = trimesh.Trimesh(vertices.copy() + camera_translation, self.faces.copy(), vertex_colors=vertex_colors)
+            mesh = trimesh.Trimesh(
+                vertices.copy() + camera_translation,
+                self.faces.copy(),
+                vertex_colors=vertex_colors,
+            )
         else:
-            mesh = trimesh.Trimesh(vertices.copy() + camera_translation, self.faces_left.copy(),
-                                   vertex_colors=vertex_colors)
+            mesh = trimesh.Trimesh(
+                vertices.copy() + camera_translation,
+                self.faces_left.copy(),
+                vertex_colors=vertex_colors,
+            )
         # mesh = trimesh.Trimesh(vertices.copy(), self.faces.copy())
 
-        rot = trimesh.transformations.rotation_matrix(
-            np.radians(rot_angle), rot_axis)
+        rot = trimesh.transformations.rotation_matrix(np.radians(rot_angle), rot_axis)
         mesh.apply_transform(rot)
 
-        rot = trimesh.transformations.rotation_matrix(
-            np.radians(180), [1, 0, 0])
+        rot = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
         mesh.apply_transform(rot)
         return mesh
 
     def render_rgba(
-            self,
-            vertices: np.array,
-            cam_t=None,
-            rot=None,
-            rot_axis=[1, 0, 0],
-            rot_angle=0,
-            camera_z=3,
-            # camera_translation: np.array,
-            mesh_base_color=(1.0, 1.0, 0.9),
-            scene_bg_color=(0, 0, 0),
-            render_res=[256, 256],
-            focal_length=None,
-            is_right=None,
+        self,
+        vertices: np.array,
+        cam_t=None,
+        rot=None,
+        rot_axis=[1, 0, 0],
+        rot_angle=0,
+        camera_z=3,
+        # camera_translation: np.array,
+        mesh_base_color=(1.0, 1.0, 0.9),
+        scene_bg_color=(0, 0, 0),
+        render_res=[256, 256],
+        focal_length=None,
+        is_right=None,
     ):
-
-        renderer = pyrender.OffscreenRenderer(viewport_width=render_res[0],
-                                              viewport_height=render_res[1],
-                                              point_size=1.0)
+        renderer = pyrender.OffscreenRenderer(
+            viewport_width=render_res[0], viewport_height=render_res[1], point_size=1.0
+        )
         # material = pyrender.MetallicRoughnessMaterial(
         #     metallicFactor=0.0,
         #     alphaMode='OPAQUE',
@@ -234,25 +261,39 @@ class Renderer:
 
         if cam_t is not None:
             camera_translation = cam_t.copy()
-            camera_translation[0] *= -1.
+            camera_translation[0] *= -1.0
         else:
-            camera_translation = np.array([0, 0, camera_z * focal_length / render_res[1]])
+            camera_translation = np.array(
+                [0, 0, camera_z * focal_length / render_res[1]]
+            )
         if is_right:
             mesh_base_color = mesh_base_color[::-1]
-        mesh = self.vertices_to_trimesh(vertices, np.array([0, 0, 0]), mesh_base_color, rot_axis, rot_angle,
-                                        is_right=is_right)
+        mesh = self.vertices_to_trimesh(
+            vertices,
+            np.array([0, 0, 0]),
+            mesh_base_color,
+            rot_axis,
+            rot_angle,
+            is_right=is_right,
+        )
         mesh = pyrender.Mesh.from_trimesh(mesh)
         # mesh = pyrender.Mesh.from_trimesh(mesh, material=material)
 
-        scene = pyrender.Scene(bg_color=[*scene_bg_color, 0.0],
-                               ambient_light=(0.3, 0.3, 0.3))
-        scene.add(mesh, 'mesh')
+        scene = pyrender.Scene(
+            bg_color=[*scene_bg_color, 0.0], ambient_light=(0.3, 0.3, 0.3)
+        )
+        scene.add(mesh, "mesh")
 
         camera_pose = np.eye(4)
         camera_pose[:3, 3] = camera_translation
-        camera_center = [render_res[0] / 2., render_res[1] / 2.]
-        camera = pyrender.IntrinsicsCamera(fx=focal_length, fy=focal_length,
-                                           cx=camera_center[0], cy=camera_center[1], zfar=1e12)
+        camera_center = [render_res[0] / 2.0, render_res[1] / 2.0]
+        camera = pyrender.IntrinsicsCamera(
+            fx=focal_length,
+            fy=focal_length,
+            cx=camera_center[0],
+            cy=camera_center[1],
+            zfar=1e12,
+        )
 
         # Create camera node and add it to pyRender scene
         camera_node = pyrender.Node(camera=camera, matrix=camera_pose)
@@ -309,8 +350,6 @@ class Renderer:
 
 
 def test_wilor_image_pipeline(img_path):
-
-
     LIGHT_PURPLE = (0.25098039, 0.274117647, 0.65882353)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     dtype = torch.float16
@@ -338,10 +377,10 @@ def test_wilor_image_pipeline(img_path):
         # out['wilor_preds']['hand_pose'].shape: (1, 15, 3)
         # out['wilor_preds']['global_orient'].shape: (1, 1, 3)
         # out['wilor_preds']['betas'].shape: (1, 10)
-        verts = out["wilor_preds"]['pred_vertices'][0]
-        is_right = out['is_right']
-        cam_t = out["wilor_preds"]['pred_cam_t_full'][0]
-        scaled_focal_length = out["wilor_preds"]['scaled_focal_length']
+        verts = out["wilor_preds"]["pred_vertices"][0]
+        is_right = out["is_right"]
+        cam_t = out["wilor_preds"]["pred_cam_t_full"][0]
+        scaled_focal_length = out["wilor_preds"]["scaled_focal_length"]
         pred_keypoints_2d = out["wilor_preds"]["pred_keypoints_2d"]
         pred_keypoints_2d_all.append(pred_keypoints_2d)
         misc_args = dict(
@@ -349,14 +388,25 @@ def test_wilor_image_pipeline(img_path):
             scene_bg_color=(1, 1, 1),
             focal_length=scaled_focal_length,
         )
-        tmesh = renderer.vertices_to_trimesh(verts, cam_t.copy(), LIGHT_PURPLE, is_right=is_right)
-        tmesh.export(os.path.join(save_dir, f'{os.path.basename(img_path)}_hand{i:02d}.obj'))
-        cam_view = renderer.render_rgba(verts, cam_t=cam_t, render_res=[image.shape[1], image.shape[0]],
-                                        is_right=is_right,
-                                        **misc_args)
+        tmesh = renderer.vertices_to_trimesh(
+            verts, cam_t.copy(), LIGHT_PURPLE, is_right=is_right
+        )
+        tmesh.export(
+            os.path.join(save_dir, f"{os.path.basename(img_path)}_hand{i:02d}.obj")
+        )
+        cam_view = renderer.render_rgba(
+            verts,
+            cam_t=cam_t,
+            render_res=[image.shape[1], image.shape[0]],
+            is_right=is_right,
+            **misc_args,
+        )
 
         # Overlay image
-        render_image = render_image[:, :, :3] * (1 - cam_view[:, :, 3:]) + cam_view[:, :, :3] * cam_view[:, :, 3:]
+        render_image = (
+            render_image[:, :, :3] * (1 - cam_view[:, :, 3:])
+            + cam_view[:, :, :3] * cam_view[:, :, 3:]
+        )
 
     render_image = (255 * render_image).astype(np.uint8)
     for pred_keypoints_2d in pred_keypoints_2d_all:
@@ -365,7 +415,15 @@ def test_wilor_image_pipeline(img_path):
             radius = 3
             x, y = pred_keypoints_2d[0][j]
             cv2.circle(render_image, (int(x), int(y)), radius, color, -1)
-            cv2.putText(render_image, str(j), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            cv2.putText(
+                render_image,
+                str(j),
+                (int(x), int(y)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2,
+            )
     cv2.imwrite(os.path.join(save_dir, os.path.basename(img_path)), render_image)
     print(os.path.join(save_dir, os.path.basename(img_path)))
 
@@ -381,7 +439,7 @@ def compute_iou(bbox1, bbox2):
 
     # Calculate intersection coordinates
     x1_i = max(x1_1, x1_2)
-    y1_i = max(y1_1, y1_2) 
+    y1_i = max(y1_1, y1_2)
     x2_i = min(x2_1, x2_2)
     y2_i = min(y2_1, y2_2)
 
@@ -399,11 +457,14 @@ def compute_iou(bbox1, bbox2):
     iou = area_intersection / area_union
     return iou
 
+
 def main(
-    img_dir: str='./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01', 
-    output_dir: str='./demo_data/input_3d_meshes/arthur_tyler_pass_by_nov20/cam01',
-    pose2d_dir: str='./demo_data/input_2d_poses/arthur_tyler_pass_by_nov20/cam01',
-    person_ids: list = [1, ],
+    img_dir: str = "./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01",
+    output_dir: str = "./demo_data/input_3d_meshes/arthur_tyler_pass_by_nov20/cam01",
+    pose2d_dir: str = "./demo_data/input_2d_poses/arthur_tyler_pass_by_nov20/cam01",
+    person_ids: list = [
+        1,
+    ],
     hand_bbox_thr: float = 0.7,
     vis: bool = False,
 ):
@@ -417,38 +478,41 @@ def main(
     pipe = WiLorHandPose3dEstimationPipeline(device=device, dtype=dtype, verbose=False)
 
     # Get all demo images that end with .jpg or .png
-    img_paths = [img for img in Path(img_dir).glob('*.jpg')]
+    img_paths = [img for img in Path(img_dir).glob("*.jpg")]
     if len(img_paths) == 0:
-        img_paths = [img for img in Path(img_dir).glob('*.png')]
+        img_paths = [img for img in Path(img_dir).glob("*.png")]
     img_paths.sort()
 
     result_dict = defaultdict(dict)
-    if vis:            
+    if vis:
         renderer = Renderer(pipe.wilor_model.mano.faces)
         print("Renderer initialized")
 
     for img_path in tqdm(img_paths):
         image = cv2.imread(str(img_path))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
 
         # Retrieve the hand bbox from bbox_dir
-        frame_idx = int(img_path.stem.split('_')[-1])
-        pose2d_path = Path(pose2d_dir) / f'pose_{frame_idx:05d}.json'
+        frame_idx = int(img_path.stem.split("_")[-1])
+        pose2d_path = Path(pose2d_dir) / f"pose_{frame_idx:05d}.json"
         # if pose2d_path does not exist, continue
         if not pose2d_path.exists():
             continue
 
-        with open(pose2d_path, 'r') as f:
+        with open(pose2d_path, "r") as f:
             pose2d_data = json.load(f)
 
-        hand_bbox_dict = {person_id: {'right_hand': None, 'left_hand': None} for person_id in person_ids}
+        hand_bbox_dict = {
+            person_id: {"right_hand": None, "left_hand": None}
+            for person_id in person_ids
+        }
         for person_id in person_ids:
-            pose2d = np.array(pose2d_data[str(person_id)]['keypoints'], dtype=np.float32)
+            pose2d = np.array(
+                pose2d_data[str(person_id)]["keypoints"], dtype=np.float32
+            )
 
             left_hand_joints = pose2d[coco_wholebody_left_hand_joint_indices]
             right_hand_joints = pose2d[coco_wholebody_right_hand_joint_indices]
-
 
             if left_hand_joints[:, 2].mean() > hand_bbox_thr:
                 # compute the bounding box from the hand joints
@@ -464,7 +528,7 @@ def main(
                 left_hand_bbox[2] = min(image.shape[1], left_hand_bbox[2])
                 left_hand_bbox[3] = min(image.shape[0], left_hand_bbox[3])
 
-                hand_bbox_dict[person_id]['left_hand'] = left_hand_bbox
+                hand_bbox_dict[person_id]["left_hand"] = left_hand_bbox
 
             if right_hand_joints[:, 2].mean() > hand_bbox_thr:
                 # compute the bounding box from the hand joints
@@ -480,20 +544,19 @@ def main(
                 right_hand_bbox[2] = min(image.shape[1], right_hand_bbox[2])
                 right_hand_bbox[3] = min(image.shape[0], right_hand_bbox[3])
 
-                hand_bbox_dict[person_id]['right_hand'] = right_hand_bbox
-
+                hand_bbox_dict[person_id]["right_hand"] = right_hand_bbox
 
         is_rights = []
         bboxes = []
         person_id_list = []
         for person_id in person_ids:
-            if hand_bbox_dict[person_id]['right_hand'] is not None:
+            if hand_bbox_dict[person_id]["right_hand"] is not None:
                 is_rights.append(1)
-                bboxes.append(hand_bbox_dict[person_id]['right_hand'])
+                bboxes.append(hand_bbox_dict[person_id]["right_hand"])
                 person_id_list.append(person_id)
-            if hand_bbox_dict[person_id]['left_hand'] is not None:
+            if hand_bbox_dict[person_id]["left_hand"] is not None:
                 is_rights.append(0)
-                bboxes.append(hand_bbox_dict[person_id]['left_hand'])
+                bboxes.append(hand_bbox_dict[person_id]["left_hand"])
                 person_id_list.append(person_id)
 
         assert len(is_rights) == len(bboxes) == len(person_id_list)
@@ -501,10 +564,12 @@ def main(
 
         outputs = pipe.predict_with_bboxes(image, bboxes=bboxes, is_rights=is_rights)
 
-
         assert len(outputs) == len(bboxes)
 
-        result_dict[frame_idx] = {person_id: {'right_hand': None, 'left_hand': None} for person_id in person_ids}
+        result_dict[frame_idx] = {
+            person_id: {"right_hand": None, "left_hand": None}
+            for person_id in person_ids
+        }
         for out_idx, out in enumerate(outputs):
             # hand_bbox: (4,)
             # is_right: float 1.0 or 0.0
@@ -514,41 +579,48 @@ def main(
             # out['wilor_preds']['global_orient'].shape: (1, 1, 3)
             # out['wilor_preds']['betas'].shape: (1, 10)
             # out['wilor_preds']['pred_keypoints_2d'].shape: (1, 21, 3)
-            hand_bbox = np.array(out['hand_bbox'], dtype=np.float32) # (4,), x1y1x2y2 list
+            hand_bbox = np.array(
+                out["hand_bbox"], dtype=np.float32
+            )  # (4,), x1y1x2y2 list
 
             saving_output = {
-                'hand_bbox': hand_bbox, # (4,)
-                'global_orient': out['wilor_preds']['global_orient'][0], # (1, 3)
-                'hand_pose': out['wilor_preds']['hand_pose'][0], # (15, 3)
-                'betas': out['wilor_preds']['betas'][0], # (10,)
-                'pred_keypoints_3d': out['wilor_preds']['pred_keypoints_3d'][0], # (21, 3)
-                'pred_keypoints_2d': out['wilor_preds']['pred_keypoints_2d'][0], # (21, 3)
-            }   
+                "hand_bbox": hand_bbox,  # (4,)
+                "global_orient": out["wilor_preds"]["global_orient"][0],  # (1, 3)
+                "hand_pose": out["wilor_preds"]["hand_pose"][0],  # (15, 3)
+                "betas": out["wilor_preds"]["betas"][0],  # (10,)
+                "pred_keypoints_3d": out["wilor_preds"]["pred_keypoints_3d"][
+                    0
+                ],  # (21, 3)
+                "pred_keypoints_2d": out["wilor_preds"]["pred_keypoints_2d"][
+                    0
+                ],  # (21, 3)
+            }
             person_id = person_id_list[out_idx]
 
             is_right_from_vitpose = is_rights[out_idx]
-            is_right_from_wilor = out['is_right']
+            is_right_from_wilor = out["is_right"]
             if is_right_from_vitpose != is_right_from_wilor:
-                print(f"Mismatch between vitpose and wilor for frame {frame_idx} person {person_id}")
+                print(
+                    f"Mismatch between vitpose and wilor for frame {frame_idx} person {person_id}"
+                )
                 continue
 
             if is_right_from_vitpose:
-                result_dict[frame_idx][person_id]['right_hand'] = saving_output
+                result_dict[frame_idx][person_id]["right_hand"] = saving_output
             else:
-                result_dict[frame_idx][person_id]['left_hand'] = saving_output
+                result_dict[frame_idx][person_id]["left_hand"] = saving_output
 
-        with open(os.path.join(output_dir, f'mano_{frame_idx:05d}.pkl'), 'wb') as f:
+        with open(os.path.join(output_dir, f"mano_{frame_idx:05d}.pkl"), "wb") as f:
             pickle.dump(result_dict[frame_idx], f)
         print(f"Saved mano_{frame_idx:05d}.pkl to {output_dir}")
 
-
         if vis:
-            vis_save_dir = os.path.join(output_dir, 'vis')
+            vis_save_dir = os.path.join(output_dir, "vis")
             os.makedirs(vis_save_dir, exist_ok=True)
             render_image = image.copy()
             render_image = render_image.astype(np.float32)[:, :, ::-1] / 255.0
             pred_keypoints_2d_all = []
-            
+
             for i, out in enumerate(outputs):
                 # out.keys(): 'hand_bbox', 'is_right', 'wilor_preds'
                 # hand_bbox: (4,)
@@ -559,10 +631,10 @@ def main(
                 # out['wilor_preds']['betas'].shape: (1, 10)
                 # out['wilor_preds']['pred_keypoints_2d'].shape: (1, 21, 2)
                 # out['wilor_preds']['pred_keypoints_3d'].shape: (1, 21, 3)
-                verts = out["wilor_preds"]['pred_vertices'][0]
-                is_right = out['is_right']
-                cam_t = out["wilor_preds"]['pred_cam_t_full'][0]
-                scaled_focal_length = out["wilor_preds"]['scaled_focal_length']
+                verts = out["wilor_preds"]["pred_vertices"][0]
+                is_right = out["is_right"]
+                cam_t = out["wilor_preds"]["pred_cam_t_full"][0]
+                scaled_focal_length = out["wilor_preds"]["scaled_focal_length"]
                 pred_keypoints_2d = out["wilor_preds"]["pred_keypoints_2d"]
                 pred_keypoints_2d_all.append(pred_keypoints_2d)
                 misc_args = dict(
@@ -570,15 +642,24 @@ def main(
                     scene_bg_color=(1, 1, 1),
                     focal_length=scaled_focal_length,
                 )
-                tmesh = renderer.vertices_to_trimesh(verts, cam_t.copy(), LIGHT_PURPLE, is_right=is_right)
-                save_file_name = f'{frame_idx:05d}_wilor_hand_pose_{i:02d}.obj'
+                tmesh = renderer.vertices_to_trimesh(
+                    verts, cam_t.copy(), LIGHT_PURPLE, is_right=is_right
+                )
+                save_file_name = f"{frame_idx:05d}_wilor_hand_pose_{i:02d}.obj"
                 tmesh.export(os.path.join(vis_save_dir, save_file_name))
-                cam_view = renderer.render_rgba(verts, cam_t=cam_t, render_res=[image.shape[1], image.shape[0]],
-                                                is_right=is_right,
-                                                **misc_args)
+                cam_view = renderer.render_rgba(
+                    verts,
+                    cam_t=cam_t,
+                    render_res=[image.shape[1], image.shape[0]],
+                    is_right=is_right,
+                    **misc_args,
+                )
 
                 # Overlay image
-                render_image = render_image[:, :, :3] * (1 - cam_view[:, :, 3:]) + cam_view[:, :, :3] * cam_view[:, :, 3:]
+                render_image = (
+                    render_image[:, :, :3] * (1 - cam_view[:, :, 3:])
+                    + cam_view[:, :, :3] * cam_view[:, :, 3:]
+                )
 
             render_image = (255 * render_image).astype(np.uint8)
             for pred_keypoints_2d in pred_keypoints_2d_all:
@@ -587,13 +668,14 @@ def main(
                     radius = 3
                     x, y = pred_keypoints_2d[0][j]
                     cv2.circle(render_image, (int(x), int(y)), radius, color, -1)
-            save_file_name = f'{frame_idx:05d}_wilor_hand_pose_vis.jpg'
+            save_file_name = f"{frame_idx:05d}_wilor_hand_pose_vis.jpg"
             cv2.imwrite(os.path.join(vis_save_dir, save_file_name), render_image)
             print("Saved to ", os.path.join(vis_save_dir, save_file_name))
-        
+
     print("Done!")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     # img_path = '/home/hongsuk/projects/human_in_world/demo_data/input_images/jason_hands_dec13/frame_00083.jpg' #'/home/hongsuk/projects/human_in_world/demo_data/input_3d_meshes/arthur_tyler_pass_by_nov20/cam01/vis/00061_wilor_hand_pose_vis.jpg'
     # test_wilor_image_pipeline(img_path)
     tyro.cli(main)

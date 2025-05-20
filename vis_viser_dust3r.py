@@ -1,30 +1,26 @@
-import os
-import os.path as osp
 import pickle
 import numpy as np
 import tyro
 import viser
 import time
-import cv2
 
 from scipy.spatial.transform import Rotation as R
 
 
-def main(world_env_pkl: str, world_scale_factor: float = 5., conf_thr: float = 1.5):
+def main(world_env_pkl: str, world_scale_factor: float = 5.0, conf_thr: float = 1.5):
     # Extract data from world_env dictionary
     # Load world environment data estimated by Mast3r
-    with open(world_env_pkl, 'rb') as f:
+    with open(world_env_pkl, "rb") as f:
         world_env = pickle.load(f)
-    world_env = world_env['dust3r_ga_output']
-
+    world_env = world_env["dust3r_ga_output"]
 
     for img_name in world_env.keys():
-        world_env[img_name]['pts3d'] *= world_scale_factor
-        world_env[img_name]['cam2world'][:3, 3] *= world_scale_factor
+        world_env[img_name]["pts3d"] *= world_scale_factor
+        world_env[img_name]["cam2world"][:3, 3] *= world_scale_factor
         # get new mask
-        conf = world_env[img_name]['conf']
-        world_env[img_name]['msk'] = conf > conf_thr
-    
+        conf = world_env[img_name]["conf"]
+        world_env[img_name]["msk"] = conf > conf_thr
+
     # set viser
     server = viser.ViserServer()
     server.scene.world_axes.visible = True
@@ -42,11 +38,13 @@ def main(world_env_pkl: str, world_scale_factor: float = 5., conf_thr: float = 1
     cam_handles = []
     for _, img_name in enumerate(world_env.keys()):
         # Visualize the pointcloud of environment
-        pts3d = world_env[img_name]['pts3d']
+        pts3d = world_env[img_name]["pts3d"]
         if pts3d.ndim == 3:
             pts3d = pts3d.reshape(-1, 3)
-        points = pts3d[world_env[img_name]['msk'].flatten()]
-        colors = world_env[img_name]['rgbimg'][world_env[img_name]['msk']].reshape(-1, 3)
+        points = pts3d[world_env[img_name]["msk"].flatten()]
+        colors = world_env[img_name]["rgbimg"][world_env[img_name]["msk"]].reshape(
+            -1, 3
+        )
         # # no masking
         # points = pts3d
         # colors =world_env[img_name]['rgbimg'].reshape(-1, 3)
@@ -61,10 +59,10 @@ def main(world_env_pkl: str, world_scale_factor: float = 5., conf_thr: float = 1
         pointcloud_handles.append(pc_handle)
 
         # Visualize the camera
-        camera = world_env[img_name]['cam2world']
-        camera[:3, :3] = rot_180 @ camera[:3, :3] 
+        camera = world_env[img_name]["cam2world"]
+        camera[:3, :3] = rot_180 @ camera[:3, :3]
         camera[:3, 3] = camera[:3, 3] @ rot_180
-        
+
         # rotation matrix to quaternion
         quat = R.from_matrix(camera[:3, :3]).as_quat()
         # xyzw to wxyz
@@ -86,8 +84,8 @@ def main(world_env_pkl: str, world_scale_factor: float = 5., conf_thr: float = 1
     start_time = time.time()
     while True:
         time.sleep(0.01)
-        timing_handle.value = (time.time() - start_time) 
+        timing_handle.value = time.time() - start_time
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     tyro.cli(main)
