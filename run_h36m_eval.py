@@ -19,12 +19,17 @@ from time import perf_counter
 import cv2
 import numpy as np
 
+import torch
+
 
 def main(
     processed_dataset_dir: str = "./data/h36m/processed/",
     output_dir: str = "./data_output/h36m/",
     vis: bool = False,
 ):
+    print("CUDA available: ", torch.cuda.is_available())
+    print("Current device: ", torch.cuda.get_device_name(torch.cuda.current_device()))
+
     with open(
         os.path.join(processed_dataset_dir, "h36m_protocol1_sequences.json"), "rb"
     ) as f:
