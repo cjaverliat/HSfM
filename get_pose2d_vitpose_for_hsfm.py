@@ -15,8 +15,6 @@ from tqdm import tqdm
 from typing import List, Tuple, Dict, Any
 from mmpose.apis import inference_top_down_pose_model, init_pose_model, vis_pose_result
 
-from time import perf_counter
-
 os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 
@@ -135,10 +133,7 @@ def get_pose2d_vitpose_for_hsfm(
 ) -> dict[str, Any]:
     assert len(images) == len(images_bboxes), "Expected one bboxes dict for each image"
 
-    results = {
-        "images_results": {},
-        "images_inference_times": {},
-    }
+    results = {}
 
     for image, image_bboxes, image_idx in tqdm(
         zip(images, images_bboxes, images_indices)
@@ -162,28 +157,21 @@ def get_pose2d_vitpose_for_hsfm(
         if bboxes_sum == 0:
             continue
 
-        inference_start_time = perf_counter()
-        out = model.predict_pose(image, bboxes, box_score_threshold)
-        inference_end_time = perf_counter()
-        inference_time = inference_end_time - inference_start_time
+        with torch.no_grad():
+            out = model.predict_pose(image, bboxes, box_score_threshold)
 
-        # out: List[Dict[str, np.ndarray]]; keys: bbox, keypoints. values are numpy arrays
-        # convert values to lists
-        image_results = {}
+        results[image_idx] = {}
 
         for out_idx, person_id in enumerate(person_ids):
-            image_results[person_id] = {}
-            image_results[person_id]["bbox"] = out[out_idx]["bbox"].tolist()
-            image_results[person_id]["keypoints"] = out[out_idx]["keypoints"].tolist()
-
-        results["images_results"][image_idx] = image_results
-        results["images_inference_times"][image_idx] = inference_time
+            results[image_idx][person_id] = {}
+            results[image_idx][person_id]["bbox"] = out[out_idx]["bbox"].tolist()
+            results[image_idx][person_id]["keypoints"] = out[out_idx]["keypoints"].tolist()
 
     return results
 
 
 def save_results(results: dict[str, Any], output_dir: str) -> None:
-    for img_idx, img_result in results["images_results"].items():
+    for img_idx, img_result in results.items():
         pose_result_path = os.path.join(output_dir, f"pose_{img_idx:05d}.json")
         with open(pose_result_path, "w") as f:
             json.dump(img_result, f, indent=4)
@@ -200,10 +188,10 @@ def save_vis_results(
     vis_line_thickness: int = 1,
 ):
     for image, image_index in zip(images, images_indices):
-        if image_index not in results["images_results"]:
+        if image_index not in results:
             continue
 
-        img_result = results["images_results"][image_index]
+        img_result = results[image_index]
         vis_out = model.visualize_pose_results(
             image,
             list(img_result.values()),
