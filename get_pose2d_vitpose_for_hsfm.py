@@ -12,7 +12,6 @@ import torch.nn as nn
 import json
 
 from tqdm import tqdm
-from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from mmpose.apis import inference_top_down_pose_model, init_pose_model, vis_pose_result
 
@@ -171,6 +170,40 @@ def get_pose2d_vitpose_for_hsfm(
     return results
 
 
+def save_results(results: dict[str, Any], output_dir: str) -> None:
+    for img_idx, img_result in results["images_results"].items():
+        pose_result_path = os.path.join(output_dir, f"pose_{img_idx:05d}.json")
+        with open(pose_result_path, "w") as f:
+            json.dump(img_result, f, indent=4)
+
+
+def save_vis_results(
+    results: dict[str, Any],
+    images: list[np.ndarray],
+    images_indices: list[int],
+    output_dir: str,
+    model: ViTPoseModel,
+    kpt_score_threshold: float = 0.5,
+    vis_dot_radius: int = 4,
+    vis_line_thickness: int = 1,
+):
+    for image, image_index in zip(images, images_indices):
+        if image_index not in results["images_results"]:
+            continue
+
+        img_result = results["images_results"][image_index]
+        vis_out = model.visualize_pose_results(
+            image,
+            list(img_result.values()),
+            kpt_score_threshold,
+            vis_dot_radius,
+            vis_line_thickness,
+        )
+        filepath = os.path.join(output_dir, f"pose_{image_index:05d}.jpg")
+        os.makedirs(output_dir, exist_ok=True)
+        cv2.imwrite(filepath, vis_out)
+
+
 def main(
     img_dir: str = "./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01",
     bbox_dir: str = "./demo_data/input_masks/arthur_tyler_pass_by_nov20/cam01/json_data",
@@ -187,9 +220,6 @@ def main(
     kpt_score_threshold = 0.3
     vis_dot_radius = 4
     vis_line_thickness = 1
-
-    output_dir = os.path.join(output_dir, os.path.basename(img_dir))
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Run per image
     img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
@@ -218,25 +248,19 @@ def main(
         box_score_threshold=box_score_threshold,
     )
 
-    # Save the pose results
-    for img_idx, img_result in results["images_results"].items():
-        pose_result_path = os.path.join(output_dir, f"pose_{img_idx:05d}.json")
-        with open(pose_result_path, "w") as f:
-            json.dump(img_result, f, indent=4)
+    save_results(results, output_dir)
 
     if vis:
-        for img_idx, img_result in results["images_results"].items():
-            image = images[images_indices.index(img_idx)]
-            vis_out = model.visualize_pose_results(
-                image,
-                list(img_result.values()),
-                kpt_score_threshold,
-                vis_dot_radius,
-                vis_line_thickness,
-            )
-            vis_out_path = os.path.join(output_dir, "vis", f"pose_{img_idx:05d}.jpg")
-            Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(vis_out_path, vis_out)
+        save_vis_results(
+            results=results,
+            images=images,
+            images_indices=images_indices,
+            output_dir=os.path.join(output_dir, "vis"),
+            model=model,
+            kpt_score_threshold=kpt_score_threshold,
+            vis_dot_radius=vis_dot_radius,
+            vis_line_thickness=vis_line_thickness,
+        )
 
 
 if __name__ == "__main__":
