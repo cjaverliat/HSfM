@@ -8,11 +8,11 @@ import cv2
 import numpy as np
 import tyro
 import pickle
-import orjson
+import json
 from tqdm import tqdm
 from pathlib import Path
 from typing import Any
-
+import glob
 from hmr2.configs import CACHE_DIR_4DHUMANS
 from hmr2.models import download_models, DEFAULT_CHECKPOINT, check_smpl_exists, HMR2
 from hmr2.utils import recursive_to
@@ -262,26 +262,23 @@ def main(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Get all demo images that end with .jpg or .png
-    img_paths = [img for img in Path(img_dir).glob("*.jpg")]
-    if len(img_paths) == 0:
-        img_paths = [img for img in Path(img_dir).glob("*.png")]
-    img_paths.sort()
+    img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
+    if img_path_list == []:
+        img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.png")))
 
     images = []
     images_bboxes = []
     images_indices = []
 
-    for img_path in tqdm(img_paths):
-        img_cv2 = cv2.imread(str(img_path))
-        # read bbox
-        frame_idx = int(img_path.stem.split("_")[-1])
-        bbox_path = Path(bbox_dir) / f"mask_{frame_idx:05d}.json"
-        with open(bbox_path, "r") as f:
-            bbox_data = orjson.loads(f.read())
-
-        images.append(img_cv2)
-        images_bboxes.append(bbox_data)
-        images_indices.append(frame_idx)
+    for img_path in img_path_list:
+        img_idx = int(os.path.splitext(os.path.basename(img_path))[0].split("_")[-1])
+        image = cv2.imread(img_path)
+        det_result_path = os.path.join(bbox_dir, f"mask_{img_idx:05d}.json")
+        with open(det_result_path, "r") as f:
+            det_results = json.load(f)
+        images.append(image)
+        images_indices.append(img_idx)
+        images_bboxes.append(det_results)
 
     results, vis_results = get_smpl_hmr2_for_hsfm(
         model=model,

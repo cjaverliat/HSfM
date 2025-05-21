@@ -230,7 +230,7 @@ def main(
     images_bboxes = []
     images_indices = []
 
-    for img_idx, img_path in tqdm(enumerate(img_path_list), total=len(img_path_list)):
+    for img_path in img_path_list:
         img_idx = int(os.path.splitext(os.path.basename(img_path))[0].split("_")[-1])
         image = cv2.imread(img_path)
         det_result_path = os.path.join(bbox_dir, f"mask_{img_idx:05d}.json")
