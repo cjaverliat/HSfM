@@ -54,13 +54,16 @@ def get_smpl_hmr2_for_hsfm(
     model: HMR2,
     images: list[np.ndarray],
     images_bboxes: list[dict[str, np.ndarray]],
+    images_indices: list[int],
     person_ids: list[int],
     batch_size: int = 1,
 ) -> tuple[dict[int, Any], dict[int, Any]]:
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     dataset_list = []
-    for image_idx, (image, image_bbox) in enumerate(tqdm(zip(images, images_bboxes))):
+    for image, image_bbox, image_idx in tqdm(
+        zip(images, images_bboxes, images_indices)
+    ):
         # if value of "labels" key is empty, continue
         if not image_bbox["labels"]:
             continue
@@ -164,6 +167,74 @@ def get_smpl_hmr2_for_hsfm(
     return results, vis_results
 
 
+def save_results(results: dict[int, Any], output_dir: str) -> None:
+    for image_idx in results.keys():
+        frame_result_save_path = os.path.join(
+            output_dir, f"smpl_params_{image_idx:05d}.pkl"
+        )
+        with open(frame_result_save_path, "wb") as f:
+            pickle.dump(results[image_idx], f)
+
+
+def save_vis_results(
+    vis_results: dict[int, Any],
+    images: list[np.ndarray],
+    images_indices: list[int],
+    output_dir: str,
+    model: HMR2,
+) -> None:
+    renderer = Renderer(model.cfg, faces=model.smpl.faces)
+
+    for image, image_idx in zip(images, images_indices):
+        if image_idx not in vis_results:
+            continue
+
+        vis_result = vis_results[image_idx]
+
+        all_verts = []
+        all_cam_t = []
+        img_size = []
+        for person_id, result in vis_result.items():
+            all_verts.append(result["verts"])
+            all_cam_t.append(result["cam_t"])
+            img_size.append(result["img_size"])
+
+        scaled_focal_length = (
+            model.cfg.EXTRA.FOCAL_LENGTH
+            / model.cfg.MODEL.IMAGE_SIZE
+            * torch.as_tensor(img_size).max()
+        )
+
+        if len(all_verts) > 0:
+            img_size = img_size[0]
+            misc_args = dict(
+                mesh_base_color=LIGHT_BLUE,
+                scene_bg_color=(1, 1, 1),
+                focal_length=scaled_focal_length,
+            )
+            cam_view = renderer.render_rgba_multiple(
+                all_verts, cam_t=all_cam_t, render_res=img_size, **misc_args
+            )
+
+            # Overlay image
+            input_img = image.astype(np.float32)[:, :, ::-1] / 255.0
+            input_img = np.concatenate(
+                [input_img, np.ones_like(input_img[:, :, :1])], axis=2
+            )  # Add alpha channel
+            input_img_overlay = (
+                input_img[:, :, :3] * (1 - cam_view[:, :, 3:])
+                + cam_view[:, :, :3] * cam_view[:, :, 3:]
+            )
+
+            filepath = os.path.join(output_dir, f"smpl_{image_idx:05d}_all.jpg")
+            os.makedirs(output_dir, exist_ok=True)
+
+            cv2.imwrite(
+                filepath,
+                255 * input_img_overlay[:, :, ::-1],
+            )
+
+
 def main(
     model_checkpoint: str = DEFAULT_CHECKPOINT,
     model_config: str = "",
@@ -182,12 +253,9 @@ def main(
     download_models(CACHE_DIR_4DHUMANS)
 
     # Setup HMR2.0 model
-    model, model_cfg = load_hmr2(model_checkpoint, model_config)
+    model, _ = load_hmr2(model_checkpoint, model_config)
     model = model.to(device)
     model.eval()
-
-    # Setup the renderer
-    renderer = Renderer(model_cfg, faces=model.smpl.faces)
 
     # Make output directory if it does not exist
     output_dir = os.path.join(output_dir, os.path.basename(img_dir))
@@ -219,65 +287,21 @@ def main(
         model=model,
         images=images,
         images_bboxes=images_bboxes,
+        images_indices=images_indices,
         person_ids=person_ids,
         batch_size=batch_size,
     )
 
-    print("Saving results...")
-    # Save the result
-    for image_idx in sorted(results.keys()):
-        frame_idx = images_indices[image_idx]
-        frame_result_save_path = os.path.join(
-            output_dir, f"smpl_params_{frame_idx:05d}.pkl"
-        )
-        with open(frame_result_save_path, "wb") as f:
-            pickle.dump(results[image_idx], f)
+    save_results(results, output_dir)
 
-    # Render front view
     if vis:
-        print("Rendering result overlay...")
-        for image_idx, image in enumerate(images):
-            frame_idx = images_indices[image_idx]
-            all_verts = []
-            all_cam_t = []
-            img_size = []
-            for person_id, result in vis_results[frame_idx].items():
-                all_verts.append(result["verts"])
-                all_cam_t.append(result["cam_t"])
-                img_size.append(result["img_size"])
-
-            scaled_focal_length = (
-                model.cfg.EXTRA.FOCAL_LENGTH
-                / model.cfg.MODEL.IMAGE_SIZE
-                * torch.as_tensor(img_size).max()
-            )
-
-            if len(all_verts) > 0:
-                img_size = img_size[0]
-                misc_args = dict(
-                    mesh_base_color=LIGHT_BLUE,
-                    scene_bg_color=(1, 1, 1),
-                    focal_length=scaled_focal_length,
-                )
-                cam_view = renderer.render_rgba_multiple(
-                    all_verts, cam_t=all_cam_t, render_res=img_size, **misc_args
-                )
-
-                # Overlay image
-                input_img = image.astype(np.float32)[:, :, ::-1] / 255.0
-                input_img = np.concatenate(
-                    [input_img, np.ones_like(input_img[:, :, :1])], axis=2
-                )  # Add alpha channel
-                input_img_overlay = (
-                    input_img[:, :, :3] * (1 - cam_view[:, :, 3:])
-                    + cam_view[:, :, :3] * cam_view[:, :, 3:]
-                )
-
-                Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(
-                    os.path.join(output_dir, "vis", f"{frame_idx:05d}_all.png"),
-                    255 * input_img_overlay[:, :, ::-1],
-                )
+        save_vis_results(
+            vis_results=vis_results,
+            images=images,
+            images_indices=images_indices,
+            output_dir=os.path.join(output_dir, "vis"),
+            model=model,
+        )
 
 
 if __name__ == "__main__":
