@@ -301,7 +301,7 @@ def _extract_protocol1_frames(
                 processed_dataset_dir,
                 "video_frames",
                 f"{subject_name}_{subaction_name}",
-                f"%05d/{camera_idx:04d}.{filetype}",
+                f"%05d/{camera_idx:05d}.{filetype}",
             ),
         ]
 
