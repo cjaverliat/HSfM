@@ -138,7 +138,7 @@ def get_reconstructed_scene(
     winsize: int,
     refid: int,
     device: torch.device,
-    silent: bool,
+    verbose: bool = False,
 ):
     """
     from a list of images, run dust3r inference, global aligner.
@@ -184,14 +184,14 @@ def get_reconstructed_scene(
     pairs = make_pairs(
         imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True
     )
-    output = inference(pairs, model, device, batch_size=1, verbose=not silent)
+    output = inference(pairs, model, device, batch_size=1, verbose=verbose)
 
     mode = (
         GlobalAlignerMode.PointCloudOptimizer
         if len(imgs) > 2
         else GlobalAlignerMode.PairViewer
     )
-    scene = global_aligner(output, device=device, mode=mode, verbose=not silent)
+    scene = global_aligner(output, device=device, mode=mode, verbose=verbose)
     lr = 0.01
 
     if mode == GlobalAlignerMode.PointCloudOptimizer:
@@ -237,7 +237,7 @@ def get_world_env_dust3r_for_hsfm(
     scenegraph_type: str = "complete",
     winsize: int = 1,
     refid: int = 0,
-    silent: bool = False,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -260,7 +260,7 @@ def get_world_env_dust3r_for_hsfm(
         scenegraph_type=scenegraph_type,
         winsize=winsize,
         refid=refid,
-        silent=silent,
+        verbose=verbose,
         device=device,
     )
 
@@ -323,7 +323,7 @@ def main(
 
     # parameters
     device = "cuda"
-    silent = False
+    verbose = False
     image_size = 512
     schedule = "linear"
     niter = 300
@@ -343,7 +343,7 @@ def main(
         scenegraph_type=scenegraph_type,
         winsize=winsize,
         refid=refid,
-        silent=silent,
+        verbose=verbose,
     )
 
     save_results(results, out_pkl_dir)
