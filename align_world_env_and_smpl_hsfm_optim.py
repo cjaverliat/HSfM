@@ -10,12 +10,10 @@ import smplx
 import time
 import tqdm
 import json
-import orjson
+import glob
 import os
-
-from typing import List
+from typing import List, Any
 from datetime import datetime
-from pathlib import Path
 from collections import defaultdict
 from scipy.spatial.transform import Rotation as R
 
@@ -24,15 +22,13 @@ from dust3r.optim_factory import adjust_learning_rate_by_lr
 from dust3r.utils.device import to_numpy
 from dust3r.cloud_opt.commons import cosine_schedule, linear_schedule
 
-from vis_viser_hsfm import show_env_human_in_viser, show_optimization_results
+from vis_viser_hsfm import show_optimization_results
 from joint_names import (
     COCO_WHOLEBODY_KEYPOINTS,
     ORIGINAL_SMPLX_JOINT_NAMES,
     COCO_MAIN_BODY_SKELETON,
     SMPL_45_KEYPOINTS,
 )
-
-from time import perf_counter
 
 coco_main_body_end_joint_idx = COCO_WHOLEBODY_KEYPOINTS.index("right_heel")
 coco_main_body_joint_idx = list(range(coco_main_body_end_joint_idx + 1))
@@ -80,78 +76,92 @@ def draw_2d_keypoints(img, keypoints, keypoints_name=None, color=(0, 255, 0), ra
 
 
 def get_dust3r_init_data(results, device="cuda"):
-    cam_names = sorted(list(results.keys()))
+    image_indices = sorted(list(results.keys()))
     pts3d = [
         torch.from_numpy(results[img_name]["pts3d"]).to(device)
-        for img_name in cam_names
+        for img_name in image_indices
     ]
-    im_focals = [results[img_name]["intrinsic"][0][0] for img_name in cam_names]
+    im_focals = [results[img_name]["intrinsics"][0][0] for img_name in image_indices]
     im_poses = [
-        torch.from_numpy(results[img_name]["cam2world"]).to(device)
-        for img_name in cam_names
+        torch.from_numpy(results[img_name]["cams2world"]).to(device)
+        for img_name in image_indices
     ]
     im_poses = torch.stack(im_poses)
 
-    affine_matrix_list = [results[img_name]["affine_matrix"] for img_name in cam_names]
-    rgbimg_list = [results[img_name]["rgbimg"] for img_name in cam_names]
+    affine_matrix_list = [
+        results[img_name]["affine_matrix"] for img_name in image_indices
+    ]
+    rgbimg_list = [results[img_name]["rgbimg"] for img_name in image_indices]
 
-    return cam_names, pts3d, im_focals, im_poses, affine_matrix_list, rgbimg_list
+    return image_indices, pts3d, im_focals, im_poses, affine_matrix_list, rgbimg_list
 
 
-def get_smplx_init_data(data_path, frame_list, body_model_name):
+def load_dust3r_init_data(dust3r_results_filepath: str) -> dict[str, Any]:
+    with open(dust3r_results_filepath, "rb") as f:
+        dust3r_results = pickle.load(f)
+    return dust3r_results
+
+
+def load_smplx_init_data(
+    smplx_dir: str,
+    body_model_name: str,
+) -> dict[int, Any]:
     """
     get the smpl(x) params from the data_path, which is the directory path to the smpl_params_xxxxx.pkl
     """
+    assert body_model_name in ["smpl", "smplx"]
+
+    if body_model_name == "smplx":
+        smpl_params_data_paths = glob.glob(osp.join(smplx_dir, "smplx_params_*.pkl"))
+    else:
+        smpl_params_data_paths = glob.glob(osp.join(smplx_dir, "smpl_params_*.pkl"))
 
     smplx_params_dict = {}
-    for frame_idx in frame_list:
-        # smplx data path is like this: smplx_params_00001.pkl
-        if body_model_name == "smplx":
-            smplx_data_path = osp.join(data_path, f"smplx_params_{frame_idx:05d}.pkl")
-        else:
-            smplx_data_path = osp.join(data_path, f"smpl_params_{frame_idx:05d}.pkl")
-        if not osp.exists(smplx_data_path):
-            continue
-        with open(smplx_data_path, "rb") as f:
+
+    for smpl_params_data_path in smpl_params_data_paths:
+        image_index = int(smpl_params_data_path.split("_")[-1].split(".")[0])
+
+        with open(smpl_params_data_path, "rb") as f:
             smplx_param = pickle.load(f)
-            # For smpl_params,
-            # keys are person_ids and values are 'smpl_params': {'global_orient': (1, 3, 3), 'body_pose': (23, 3, 3), 'betas': (10)}
-            # For smplx_params,
-            smplx_params_dict[frame_idx] = smplx_param
+
+        smplx_params_dict[image_index] = smplx_param
 
     return smplx_params_dict
 
 
-def get_pose2d_init_data(data_path, frame_list):
+def load_pose2d_init_data(pose2d_dir: str) -> dict[int, Any]:
     """
     get the pose2d params from the data_path, which is the directory path to the pose2d_xxxxx.pkl
     """
+
+    pose2d_data_paths = glob.glob(osp.join(pose2d_dir, "pose_*.json"))
+
     pose2d_params_dict = {}
 
-    for frame_idx in frame_list:
-        pose2d_data_path = osp.join(data_path, f"pose_{frame_idx:05d}.json")
-        if not osp.exists(pose2d_data_path):
-            continue
+    for pose2d_data_path in pose2d_data_paths:
+        image_index = int(pose2d_data_path.split("_")[-1].split(".")[0])
+
         with open(pose2d_data_path, "r") as f:
             pose2d_params = json.load(f)
             # keys are person_ids and values are 'keypoints', 'bbox'
             # change person id string to int
-            pose2d_params_dict[frame_idx] = {
+            pose2d_params_dict[image_index] = {
                 int(person_id): pose2d_params[person_id] for person_id in pose2d_params
             }
 
     return pose2d_params_dict
 
 
-def get_bbox_init_data(data_path, frame_list):
+def load_bbox_init_data(bbox_dir: str) -> dict[int, Any]:
     """
     get the bbox params from the data_path, which is the directory path to the mask_xxxxx.json
     """
     bbox_params_dict = {}
-    for frame_idx in frame_list:
-        bbox_data_path = osp.join(data_path, f"mask_{frame_idx:05d}.json")
-        if not osp.exists(bbox_data_path):
-            continue
+
+    bbox_data_paths = glob.glob(osp.join(bbox_dir, "mask_*.json"))
+
+    for bbox_data_path in bbox_data_paths:
+        image_index = int(bbox_data_path.split("_")[-1].split(".")[0])
         with open(bbox_data_path, "r") as f:
             bbox_params = json.load(f)
             # {"mask_name": "mask_00215.npy", "mask_height": 1280, "mask_width": 720, "promote_type": "mask", "labels": {"2": {"instance_id": 2, "class_name": "person", "x1": 0, "y1": 0, "x2": 0, "y2": 0, "logit": 0.0}, "1": {"instance_id": 1, "class_name": "person", "x1": 0, "y1": 0, "x2": 0, "y2": 0, "logit": 0.0}}}
@@ -172,22 +182,21 @@ def get_bbox_init_data(data_path, frame_list):
 
             new_bbox_params[int(person_id)] = bbox_xyxy
 
-        bbox_params_dict[frame_idx] = new_bbox_params
+        bbox_params_dict[image_index] = new_bbox_params
 
     return bbox_params_dict
 
 
-def get_mask_init_data(data_path, frame_list):
+def load_mask_init_data(mask_dir: str) -> dict[int, Any]:
     """
     get the mask params from the data_path, which is the directory path to the mask_xxxxx.npy
     """
     mask_params_dict = {}
-    for frame_idx in frame_list:
-        mask_data_path = osp.join(data_path, f"mask_{frame_idx:05d}.npy")
-        if not osp.exists(mask_data_path):
-            continue
+    mask_data_paths = glob.glob(osp.join(mask_dir, "mask_*.npy"))
+    for mask_data_path in mask_data_paths:
+        image_index = int(mask_data_path.split("_")[-1].split(".")[0])
         mask_params = np.load(mask_data_path)
-        mask_params_dict[frame_idx] = mask_params  # (H, W)
+        mask_params_dict[image_index] = mask_params  # (H, W)
 
     return mask_params_dict
 
@@ -1053,6 +1062,7 @@ def get_stage_optimizer(
     residual_scene_scale,
     stage: int,
     lr: float = 0.01,
+    verbose: bool = True,
 ):
     # 1st stage; optimize the scene scale, human root translation, shape (beta), and global orientation parameters
     # 2nd stage; optimize the dust3r scene parameters +  human root translation, shape (beta), and global orientation
@@ -1122,14 +1132,15 @@ def get_stage_optimizer(
 
         optimizing_params = scene_params + human_params_to_optimize
     # Print optimization parameters
-    print(f"Optimizing {len(optimizing_params)} parameters:")
-    print(
-        f"- Human parameters ({len(human_params_names_to_optimize)}): {human_params_names_to_optimize}"
-    )
-    if stage == 2 or stage == 3:
-        print(f"- Scene parameters ({len(scene_params)})")
-    if stage == 1:
-        print("- Residual scene scale (1)")
+    if verbose:
+        print(f"Optimizing {len(optimizing_params)} parameters:")
+        print(
+            f"- Human parameters ({len(human_params_names_to_optimize)}): {human_params_names_to_optimize}"
+        )
+        if stage == 2 or stage == 3:
+            print(f"- Scene parameters ({len(scene_params)})")
+        if stage == 1:
+            print("- Residual scene scale (1)")
     optimizer = torch.optim.Adam(optimizing_params, lr=lr, betas=(0.9, 0.9))
     return optimizer
 
@@ -1147,30 +1158,19 @@ def convert_human_params_to_numpy(human_params):
     return human_params_np
 
 
-def main(
-    world_env_path: str,
-    bbox_dir: str = "./tmp_demo_output/json_data",
-    pose2d_dir: str = "./tmp_demo_output/pose2d",
-    smplx_dir: str = "./tmp_demo_output/smplx",
-    out_dir: str = "./tmp_demo_output",
-    person_ids: List[int] = [
-        1,
-    ],
-    body_model_name: str = "smplx",
-    timing_info_dir: str = "./demo_output/timing_info",
-    vis: bool = False,
+def align_world_env_and_smpl_hsfm(
+    world_env: dict[str, Any],
+    images_smplx_params_dict: dict[str, Any],
+    images_pose2d_params_dict: dict[str, Any],
+    images_bboxes_params_dict: dict[str, Any],
+    images_sam2_mask_params_dict: dict[str, Any],
+    smplx_layer_dict: dict[str, Any],
+    person_ids: List[int],
+    body_model_name: str,
+    device: str,
+    verbose: bool = True,
+    show_progress: bool = True,
 ):
-    """
-    world_env_path: path to the world environment from Dust3r
-    bbox_dir: directory containing the bounding box predictions from Dust3r
-    pose2d_dir: directory containing the 2D pose predictions from Dust3r
-    smpl_dir: directory containing the SMPL model from Dust3r
-    out_dir: directory to save the aligned results after optimization
-    person_ids: list of person ids to optimize; ex) --person-ids 1 2
-    vis: whether to visualize the results
-    """
-    # I abuse 'cam_names' and 'frame_names' interchangeably - Hongsuk
-
     # Parameters I am tuning
     human_loss_weight = 5.0
     stage2_start_idx_percentage = 0.4  # 0.5 #0.2
@@ -1187,7 +1187,6 @@ def main(
     mode = (
         GlobalAlignerMode.PointCloudOptimizer
     )  # if num_of_cams > 2 else GlobalAlignerMode.PairViewer
-    device = "cuda"
     silent = False
     schedule = "linear"
     lr_base = lr
@@ -1200,59 +1199,35 @@ def main(
     focal_break = 20
 
     # Logistics
-    save_2d_pose_vis = 20
     scene_loss_timer = Timer()
     human_loss_timer = Timer()
     gradient_timer = Timer()
 
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    vis_output_path = osp.join(out_dir, "vis")
-    Path(vis_output_path).mkdir(parents=True, exist_ok=True)
-
-    """ Load the initial data """
-    print(
-        "\033[92m"
-        + "Loading initial data..."
-        + "\033[0m"
-        + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    data_load_start_time = perf_counter()
-    # load the initial world environment
-    with open(world_env_path, "rb") as f:
-        world_env = pickle.load(f)
-    data_load_end_time = perf_counter()
-
-    data_preparation_start_time = perf_counter()
     dust3r_network_output = world_env["dust3r_network_output"]
     dust3r_ga_output = world_env["dust3r_ga_output"]
 
-    frame_names, pts3d, im_focals, im_poses, affine_matrix_list, rgbimg_list = (
+    image_indices, pts3d, im_focals, im_poses, affine_matrix_list, rgbimg_list = (
         get_dust3r_init_data(dust3r_ga_output, device)
     )
-    frame_idx_list = [int(f.split("_")[-1]) for f in frame_names]
-    print("Total number of frames:", len(frame_names))
 
-    # load the initial smpl output estimated
-    smplx_params_dict = get_smplx_init_data(smplx_dir, frame_idx_list, body_model_name)
+    # Filter the data to match the image indices
+    images_smplx_params_dict = {
+        image_idx: images_smplx_params_dict[image_idx] for image_idx in image_indices
+    }
+    images_pose2d_params_dict = {
+        image_idx: images_pose2d_params_dict[image_idx] for image_idx in image_indices
+    }
+    images_bboxes_params_dict = {
+        image_idx: images_bboxes_params_dict[image_idx] for image_idx in image_indices
+    }
 
-    # load the 2D pose predictions
-    pose2d_params_dict = get_pose2d_init_data(pose2d_dir, frame_idx_list)
-
-    # load the bounding box predictions
-    bbox_params_dict = get_bbox_init_data(bbox_dir, frame_idx_list)
-
-    # load the sam2 mask predictions
-    # this is just for later visualization
-    # not used for optimization
-    sam2_dir = bbox_dir.replace("json_data", "mask_data")
-    sam2_mask_params_dict = get_mask_init_data(sam2_dir, frame_idx_list)
     sam2_mask_params_dict_transformed = {}
 
-    if len(sam2_mask_params_dict) > 0:
-        for idx, frame_idx in enumerate(frame_idx_list):
-            sam2_mask = sam2_mask_params_dict[frame_idx]
-            affine_matrix = affine_matrix_list[idx]
+    if len(images_sam2_mask_params_dict) > 0:
+        for i, (image_idx, sam2_mask) in enumerate(
+            images_sam2_mask_params_dict.items()
+        ):
+            affine_matrix = affine_matrix_list[i]
 
             # Convert 2x3 affine matrix to 3x3 homogeneous form
             affine_matrix_homog = np.vstack([affine_matrix, [0, 0, 1]])
@@ -1265,46 +1240,41 @@ def main(
             sam2_mask_transformed = cv2.warpAffine(
                 sam2_mask,
                 affine_matrix_inv_2x3,
-                (rgbimg_list[idx].shape[1], rgbimg_list[idx].shape[0]),
+                (rgbimg_list[i].shape[1], rgbimg_list[i].shape[0]),
                 flags=cv2.INTER_NEAREST,
             )
 
-            frame_name = frame_names[idx]
-            sam2_mask_params_dict_transformed[frame_name] = sam2_mask_transformed
-
-            # TEMP Vis
-            # rgb = rgbimg_list[idx]
-            # rgb[sam2_mask_transformed > 0] = 0
-            # cv2.imwrite(osp.join(vis_output_path, f'frame_{frame_name}_sam2_mask.png'), rgb[..., ::-1] * 255)
+            sam2_mask_params_dict_transformed[image_idx] = sam2_mask_transformed
 
     """ Rearrange the data for optimization """
-    print(
-        "\033[92m"
-        + "Rearranging the data for optimization..."
-        + "\033[0m"
-        + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    if verbose:
+        print(
+            "\033[92m"
+            + "Rearranging the data for optimization..."
+            + "\033[0m"
+            + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
     multiview_affine_transforms = {}
     multiview_images = {}
-    for idx, frame_name in enumerate(frame_names):
+    for i, image_index in enumerate(image_indices):
         # get the affine matrix
-        affine_matrix = affine_matrix_list[idx]
-        multiview_affine_transforms[frame_name] = affine_matrix
-        multiview_images[frame_name] = rgbimg_list[idx]
+        affine_matrix = affine_matrix_list[i]
+        multiview_affine_transforms[image_index] = affine_matrix
+        multiview_images[image_index] = rgbimg_list[i]
 
     # Put pose2d, bbox, and smpl parameters in the same dictionary
     multiview_multiple_human_cam_pred = {}
-    for frame_idx, frame_name in zip(frame_idx_list, frame_names):
-        multiview_multiple_human_cam_pred[frame_name] = {}
+    for image_index in image_indices:
+        multiview_multiple_human_cam_pred[image_index] = {}
         for person_id in person_ids:
-            multiview_multiple_human_cam_pred[frame_name][person_id] = {}
-            multiview_multiple_human_cam_pred[frame_name][person_id]["pose2d"] = (
-                pose2d_params_dict[frame_idx][person_id]["keypoints"]
+            multiview_multiple_human_cam_pred[image_index][person_id] = {}
+            multiview_multiple_human_cam_pred[image_index][person_id]["pose2d"] = (
+                images_pose2d_params_dict[image_index][person_id]["keypoints"]
             )  # (133, 2+1), COCO_WHOLEBODY_KEYPOINTS order
-            multiview_multiple_human_cam_pred[frame_name][person_id]["bbox"] = (
-                bbox_params_dict[frame_idx][person_id]
+            multiview_multiple_human_cam_pred[image_index][person_id]["bbox"] = (
+                images_bboxes_params_dict[image_index][person_id]
             )  # (4+1, )
-            smplx_data = smplx_params_dict[frame_idx][
+            smplx_data = images_smplx_params_dict[image_index][
                 person_id
             ]  # Dict[str, torch.tensor]
 
@@ -1317,7 +1287,7 @@ def main(
                     )
                     for key in smplx_data["smpl_params"].keys()
                 }
-                multiview_multiple_human_cam_pred[frame_name][person_id]["params"] = (
+                multiview_multiple_human_cam_pred[image_index][person_id]["params"] = (
                     smpl_params_tensor
                 )
                 # SMPL parameter shapes:
@@ -1332,7 +1302,7 @@ def main(
                     for key in smplx_data.keys()
                     if smplx_data[key] is not None
                 }
-                multiview_multiple_human_cam_pred[frame_name][person_id]["params"] = (
+                multiview_multiple_human_cam_pred[image_index][person_id]["params"] = (
                     smplx_params_tensor
                 )
                 # SMPLX parameter shapes:
@@ -1426,96 +1396,23 @@ def main(
             bbox_transformed = bbox_transformed.T
             bbox[:4] = bbox_transformed[:, :2].reshape(-1)
 
-            if vis:
-                img = (multiview_images[cam_name] * 255).astype(np.uint8)
-                # Convert back to numpy for visualization
-                pose2d_np = pose2d_transformed.cpu().numpy()
-                bbox_np = bbox.cpu().numpy()
-                img = draw_2d_keypoints(img, pose2d_np)
-                img = cv2.rectangle(
-                    img,
-                    (int(bbox_np[0]), int(bbox_np[1])),
-                    (int(bbox_np[2]), int(bbox_np[3])),
-                    (0, 255, 0),
-                    2,
-                )
-
-                img = cv2.putText(
-                    img,
-                    str(human_name),
-                    (int(bbox_np[0]), int(bbox_np[1])),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    2,
-                )
-
-                cv2.imwrite(
-                    osp.join(
-                        vis_output_path,
-                        f"target_frame_{cam_name}_{human_name}_2d_keypoints_bbox.png",
-                    ),
-                    img[..., ::-1],
-                )
-
             # Store transformed results
             multiview_multiperson_poses2d[human_name][cam_name] = pose2d_transformed
             multiview_multiperson_bboxes[human_name][cam_name] = bbox
 
     """ Initialize the human parameters """
-    print(
-        "\033[92m"
-        + "Initialize the human parameters..."
-        + "\033[0m"
-        + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    if verbose:
+        print(
+            "\033[92m"
+            + "Initialize the human parameters..."
+            + "\033[0m"
+            + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
     # intrinsics for human translation initialization
-    if body_model_name == "smplx":
-        smplx_layer_dict = {
-            1: smplx.create(
-                model_path="./body_models",
-                model_type="smplx",
-                gender="neutral",
-                use_pca=False,
-                num_pca_comps=45,
-                flat_hand_mean=True,
-                use_face_contour=True,
-                num_betas=10,
-                batch_size=1,
-            ).to(device),
-            len(person_ids): smplx.create(
-                model_path="./body_models",
-                model_type="smplx",
-                gender="neutral",
-                use_pca=False,
-                num_pca_comps=45,
-                flat_hand_mean=True,
-                use_face_contour=True,
-                num_betas=10,
-                batch_size=len(person_ids),
-            ).to(device),
-        }
-    else:
-        smplx_layer_dict = {
-            1: smplx.create(
-                model_path="./body_models",
-                model_type="smpl",
-                gender="neutral",
-                num_betas=10,
-                batch_size=1,
-            ).to(device),
-            len(person_ids): smplx.create(
-                model_path="./body_models",
-                model_type="smpl",
-                gender="neutral",
-                num_betas=10,
-                batch_size=len(person_ids),
-            ).to(device),
-        }
     init_focal_length = im_focals[0]
     init_princpt = [256.0, 144.0]
 
-    human_params, human_inited_cam_poses, first_cam_human_vertices = init_human_params(
+    human_params, human_inited_cam_poses, _ = init_human_params(
         smplx_layer_dict[1],
         body_model_name,
         multiview_multiple_human_cam_pred,
@@ -1523,7 +1420,7 @@ def main(
         init_focal_length,
         init_princpt,
         device,
-        get_vertices=vis,
+        get_vertices=False,
     )  # dict of human parameters
     init_human_cam_data = {
         "human_params": human_params,
@@ -1531,18 +1428,19 @@ def main(
     }
 
     """ Initialize the scene """
-    print(
-        "\033[92m"
-        + "Initialize the scene..."
-        + "\033[0m"
-        + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    if verbose:
+        print(
+            "\033[92m"
+            + "Initialize the scene..."
+            + "\033[0m"
+            + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
     # Convert camera locations to torch tensors and move to device
     human_inited_cam_locations = []
     dust3r_cam_locations = []
-    for frame_name in sorted(list(human_inited_cam_poses.keys())):
-        human_inited_cam_locations.append(human_inited_cam_poses[frame_name][:3, 3])
-        dust3r_cam_locations.append(im_poses[frame_names.index(frame_name)][:3, 3])
+    for image_index in sorted(list(human_inited_cam_poses.keys())):
+        human_inited_cam_locations.append(human_inited_cam_poses[image_index][:3, 3])
+        dust3r_cam_locations.append(im_poses[image_indices.index(image_index)][:3, 3])
     human_inited_cam_locations = torch.stack(human_inited_cam_locations)  # (N, 3)
     dust3r_cam_locations = torch.stack(dust3r_cam_locations)  # (N, 3)
 
@@ -1583,17 +1481,19 @@ def main(
             dist_ratio = hmr2_cam_dist / dust3r_cam_dist
             scene_scale = abs(dist_ratio)
         else:
-            print(
-                "Not enough camera locations to perform Procrustes alignment or distance ratio calculation"
-            )
+            if verbose:
+                print(
+                    "Not enough camera locations to perform Procrustes alignment or distance ratio calculation"
+                )
             scene_scale = 80.0
         niter = min(max(int(niter_factor * scene_scale), min_niter), max_niter)
 
-        print(f"Dust3r to Human original scale ratio: {scene_scale}")
-        print(
-            f"Set the number of iterations to {niter}; {niter_factor} * {scene_scale}"
-        )
-        print(f"Rescaled Dust3r to Human scale ratio: {scene_scale}")
+        if verbose:
+            print(f"Dust3r to Human original scale ratio: {scene_scale}")
+            print(
+                f"Set the number of iterations to {niter}; {niter_factor} * {scene_scale}"
+            )
+            print(f"Rescaled Dust3r to Human scale ratio: {scene_scale}")
 
         # do the optimization again with scaled 3D points and camera poses
         pts3d_scaled = [p * scene_scale for p in pts3d]
@@ -1604,16 +1504,19 @@ def main(
         # print("Error in Procrustes alignment or distance ratio calculation due to zero division...")
         # print(f"Skipping this sample {sample['sequence']}_{sample['frame']}_{''.join(cam_names)}...")
         # continue
-        print(
-            "Error in Procrustes alignment or distance ratio calculation due to Dust3r or HMR2 failure..."
-        )
-        print("Setting the scale to 80.0 and switch to HMR2 initialized camera poses")
+        if verbose:
+            print(
+                "Error in Procrustes alignment or distance ratio calculation due to Dust3r or HMR2 failure..."
+            )
+            print(
+                "Setting the scale to 80.0 and switch to HMR2 initialized camera poses"
+            )
         scene_scale = 80.0
         niter = min(max(int(niter_factor * scene_scale), min_niter), max_niter)
 
         # Switch dust3r camera poses to the hmr2 initialized camera poses
         for cam_name in sorted(list(human_inited_cam_poses.keys())):
-            im_poses[frame_names.index(cam_name)] = torch.from_numpy(
+            im_poses[image_indices.index(cam_name)] = torch.from_numpy(
                 human_inited_cam_poses[cam_name]
             ).to(device)
 
@@ -1634,9 +1537,10 @@ def main(
     scene.norm_pw_scale = norm_pw_scale
 
     # initialize the scene parameters with the known poses or point clouds
-    if len(frame_names) >= 2:
+    if len(image_indices) >= 2:
         if init == "known_params_hongsuk":
-            print(f"Using known params initialization; im_focals: {im_focals}")
+            if verbose:
+                print(f"Using known params initialization; im_focals: {im_focals}")
             scene.init_from_known_params_hongsuk(
                 im_focals=im_focals,
                 im_poses=im_poses,
@@ -1645,27 +1549,14 @@ def main(
                 min_conf_thr=min_conf_thr_for_pnp,
             )
 
-            print("Known params init")
+            if verbose:
+                print("Known params init")
         else:
             raise ValueError(f"Unknown initialization method: {init}")
     scene_params = [p for p in scene.parameters() if p.requires_grad]
 
-    # Visualize the initilization of 3D human and 3D world
-    if vis and first_cam_human_vertices is not None:
-        world_env = parse_to_save_data(scene, frame_names)
-        try:
-            show_env_human_in_viser(
-                world_env=world_env,
-                world_scale_factor=1.0,
-                smplx_vertices_dict=first_cam_human_vertices,
-                smplx_faces=smplx_layer_dict[1].faces,
-            )
-        except Exception:
-            import pdb
-
-            pdb.set_trace()
-
-    print("Do the final check for the scene scale")
+    if verbose:
+        print("Do the final check for the scene scale")
     res_scale = 1.0
     multiview_cam2world_4by4 = scene.get_im_poses().detach()  # (len(cam_names), 4, 4)
     multiview_world2cam_4by4 = torch.inverse(
@@ -1696,7 +1587,8 @@ def main(
         scene_scale = scene_scale * update_scale_factor
         niter = min(max(int(niter * update_scale_factor), min_niter), max_niter)
 
-        print(f"Rescaling the scene scale to {res_scale:.3f}")
+        if verbose:
+            print(f"Rescaling the scene scale to {res_scale:.3f}")
 
         # Apply cam2world to the root_transl
         root_transl_cam = (
@@ -1709,12 +1601,16 @@ def main(
         scale_update_iter += 1
 
     if scale_update_iter == max_scale_update_iter:
-        print("Warning: Maximum number of scale update iterations reached")
-        print(f"Set niter to {max_niter}")
+        if verbose:
+            print("Warning: Maximum number of scale update iterations reached")
+            print(f"Set niter to {max_niter}")
         niter = max_niter
     else:
-        print("All root_transl_cam have positive z values")
-    print(f"Dust3r world is scaled by {scene_scale:.3f}")
+        if verbose:
+            print("All root_transl_cam have positive z values")
+
+    if verbose:
+        print(f"Dust3r world is scaled by {scene_scale:.3f}")
     residual_scene_scale = nn.Parameter(
         torch.tensor(res_scale, requires_grad=True).to(device)
     )
@@ -1731,32 +1627,33 @@ def main(
     # 3rd stage; ex) stage 3 is from 60% to 100%
     stage3_iter = list(range(int(niter * stage3_start_idx_percentage), niter))
     # Given the number of iterations, run the optimizer while forwarding the scene with the current parameters to get the loss
-    data_preparation_end_time = perf_counter()
 
     """ Start the optimization """
-    print(
-        "\033[92m"
-        + "Initializing optimizer..."
-        + "\033[0m"
-        + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    print("\033[94m" + f"Number of iterations: {niter}" + "\033[0m")
-    print(
-        "\033[94m" + f"Stage 1: 0% to {stage2_start_idx_percentage * 100}%" + "\033[0m"
-    )
-    print(
-        "\033[94m"
-        + f"Stage 2: {stage2_start_idx_percentage * 100}% to {stage3_start_idx_percentage * 100}%"
-        + "\033[0m"
-    )
-    print(
-        "\033[94m"
-        + f"Stage 3: {stage3_start_idx_percentage * 100}% to 100%"
-        + "\033[0m"
-    )
+    if verbose:
+        print(
+            "\033[92m"
+            + "Initializing optimizer..."
+            + "\033[0m"
+            + f" time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        print("\033[94m" + f"Number of iterations: {niter}" + "\033[0m")
+        print(
+            "\033[94m"
+            + f"Stage 1: 0% to {stage2_start_idx_percentage * 100}%"
+            + "\033[0m"
+        )
+        print(
+            "\033[94m"
+            + f"Stage 2: {stage2_start_idx_percentage * 100}% to {stage3_start_idx_percentage * 100}%"
+            + "\033[0m"
+        )
+        print(
+            "\033[94m"
+            + f"Stage 3: {stage3_start_idx_percentage * 100}% to 100%"
+            + "\033[0m"
+        )
 
-    optimization_start_time = perf_counter()
-    with tqdm.tqdm(total=niter) as bar:
+    with tqdm.tqdm(total=niter, disable=not show_progress) as bar:
         while bar.n < bar.total:
             # Set optimizer
             if bar.n == stage1_iter[0]:
@@ -1767,8 +1664,10 @@ def main(
                     residual_scene_scale,
                     1,
                     lr,
+                    verbose=verbose,
                 )
-                print("\n1st stage optimization starts at ", bar.n)
+                if verbose:
+                    print("\n1st stage optimization starts at ", bar.n)
             elif bar.n == stage2_iter[0]:
                 human_loss_weight *= 2.0
                 lr_base = lr = 0.01
@@ -1779,10 +1678,12 @@ def main(
                     residual_scene_scale,
                     2,
                     lr,
+                    verbose=verbose,
                 )
-                print("\n2nd stage optimization starts at ", bar.n)
+                if verbose:
+                    print("\n2nd stage optimization starts at ", bar.n)
+                    print("Residual scene scale: ", residual_scene_scale.item())
                 # Reinitialize the scene
-                print("Residual scene scale: ", residual_scene_scale.item())
                 scene_intrinsics = scene.get_intrinsics().detach().cpu().numpy()
                 im_focals = [intrinsic[0, 0] for intrinsic in scene_intrinsics]
                 im_poses = scene.get_im_poses().detach()
@@ -1796,14 +1697,8 @@ def main(
                     niter_PnP=niter_PnP,
                     min_conf_thr=min_conf_thr_for_pnp,
                 )
-                print("Known params init")
-
-                if False and vis:
-                    # Visualize the initilization of 3D human and 3D world
-                    world_env = parse_to_save_data(scene, frame_names)
-                    show_optimization_results(
-                        world_env, body_model_name, human_params, smplx_layer_dict[1]
-                    )
+                if verbose:
+                    print("Known params init")
 
             elif bar.n == stage3_iter[0]:
                 human_loss_weight *= 0.5
@@ -1815,15 +1710,10 @@ def main(
                     residual_scene_scale,
                     3,
                     lr,
+                    verbose=verbose,
                 )
-                print("\n3rd stage optimization starts at ", bar.n)
-
-                if False and vis:
-                    # Visualize the initilization of 3D human and 3D world
-                    world_env = parse_to_save_data(scene, frame_names)
-                    show_optimization_results(
-                        world_env, body_model_name, human_params, smplx_layer_dict[1]
-                    )
+                if verbose:
+                    print("\n3rd stage optimization starts at ", bar.n)
 
             lr = adjust_lr(bar.n, niter, lr_base, lr_min, optimizer, schedule)
             optimizer.zero_grad()
@@ -1871,7 +1761,7 @@ def main(
                 smplx_layer_dict,
                 body_model_name,
                 human_params,
-                frame_names,
+                image_indices,
                 multiview_world2cam_4by4,
                 multiview_intrinsics,
                 multiview_multiperson_poses2d,
@@ -1904,50 +1794,21 @@ def main(
             bar.set_postfix_str(loss_str)
             bar.update()
 
-            if vis and bar.n % save_2d_pose_vis == 0:
-                for frame_name, human_joints in projected_joints.items():
-                    img = scene.imgs[frame_names.index(frame_name)].copy() * 255.0
-                    img = img.astype(np.uint8)
-                    for human_name, joints in human_joints.items():
-                        # darw the human name
-                        img = cv2.putText(
-                            img,
-                            str(human_name),
-                            (int(joints[0, 0]), int(joints[0, 1])),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 0),
-                            2,
-                        )
-                        for idx, joint in enumerate(joints):
-                            img = cv2.circle(
-                                img, (int(joint[0]), int(joint[1])), 1, (0, 255, 0), -1
-                            )
-                            # draw the index
-                            # img = cv2.putText(img, f"{idx}", (int(joint[0]), int(joint[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                    cv2.imwrite(
-                        osp.join(
-                            vis_output_path, f"optim_vis_{frame_name}_{bar.n}.png"
-                        ),
-                        img[:, :, ::-1],
-                    )
+    if verbose:
+        print(
+            "Final losses:", " ".join([f"{k}={v.item():g}" for k, v in losses.items()])
+        )
+        print(
+            f"Time taken: human_loss={human_loss_timer.total_time:g}s, scene_loss={scene_loss_timer.total_time:g}s, backward={gradient_timer.total_time:g}s"
+        )
 
-    optimization_end_time = perf_counter()
-
-    print("Final losses:", " ".join([f"{k}={v.item():g}" for k, v in losses.items()]))
-    print(
-        f"Time taken: human_loss={human_loss_timer.total_time:g}s, scene_loss={scene_loss_timer.total_time:g}s, backward={gradient_timer.total_time:g}s"
-    )
-
-    save_start_time = perf_counter()
-    # Save output
-    total_output = {}
-    total_output["hsfm_places_cameras"] = parse_to_save_data(scene, frame_names)
+    results = {}
+    results["hsfm_places_cameras"] = parse_to_save_data(scene, image_indices)
 
     if len(sam2_mask_params_dict_transformed) > 0:
-        for frame_name in total_output["hsfm_places_cameras"].keys():
-            total_output["hsfm_places_cameras"][frame_name]["sam2_mask"] = (
-                sam2_mask_params_dict_transformed[frame_name]
+        for image_index in results["hsfm_places_cameras"].keys():
+            results["hsfm_places_cameras"][image_index]["sam2_mask"] = (
+                sam2_mask_params_dict_transformed[image_index]
             )
 
     if body_model_name == "smpl":
@@ -1958,37 +1819,139 @@ def main(
             human_params[person_id]["body_pose"] = rotation_6d_to_matrix(
                 human_params[person_id]["body_pose"]
             )
-    total_output["hsfm_people(smplx_params)"] = convert_human_params_to_numpy(
-        human_params
+    results["hsfm_people(smplx_params)"] = convert_human_params_to_numpy(human_params)
+    results["dust3r_places_cameras"] = dust3r_ga_output
+    results["hmr2_people_cameras"] = init_human_cam_data
+
+    return results
+
+def save_results(results: dict[str, Any], body_model_name: str, output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+    output_name = f'hsfm_output_{body_model_name}'
+    with open(osp.join(output_dir, f'{output_name}.pkl'), "wb") as f:
+        pickle.dump(results, f)
+
+def show_results(
+    results: dict[str, Any],
+    body_model_name: str,
+    smplx_layer_dict: dict[str, Any],
+    device: str,
+):
+    human_params = results["hsfm_people(smplx_params)"]
+    world_env = results["hsfm_places_cameras"]
+    for human_name, optim_target_dict in human_params.items():
+        for key, value in optim_target_dict.items():
+            human_params[human_name][key] = torch.from_numpy(value).to(device)
+
+    show_optimization_results(
+        world_env,
+        body_model_name,
+        human_params,
+        smplx_layer_dict[1],
     )
-    total_output["dust3r_places_cameras"] = dust3r_ga_output
-    total_output["hmr2_people_cameras"] = init_human_cam_data
 
-    output_name = f"hsfm_output_{body_model_name}"
-    print("Saving to ", osp.join(out_dir, f"{output_name}.pkl"))
-    with open(osp.join(out_dir, f"{output_name}.pkl"), "wb") as f:
-        pickle.dump(total_output, f)
-    save_end_time = perf_counter()
 
-    timing_info = {
-        "data_load_time": data_load_end_time - data_load_start_time,
-        "data_preparation_time": data_preparation_end_time
-        - data_preparation_start_time,
-        "optimization_time": optimization_end_time - optimization_start_time,
-        "save_time": save_end_time - save_start_time,
-    }
+def main(
+    world_env_path: str,
+    bbox_dir: str = "./tmp_demo_output/json_data",
+    pose2d_dir: str = "./tmp_demo_output/pose2d",
+    smplx_dir: str = "./tmp_demo_output/smplx",
+    out_dir: str = "./tmp_demo_output",
+    person_ids: List[int] = [
+        1,
+    ],
+    body_model_name: str = "smplx",
+    vis: bool = False,
+):
+    """
+    world_env_path: path to the world environment from Dust3r
+    bbox_dir: directory containing the bounding box predictions from Dust3r
+    pose2d_dir: directory containing the 2D pose predictions from Dust3r
+    smpl_dir: directory containing the SMPL model from Dust3r
+    out_dir: directory to save the aligned results after optimization
+    person_ids: list of person ids to optimize; ex) --person-ids 1 2
+    vis: whether to visualize the results
+    """
+    device = "cuda"
 
-    with open(os.path.join(timing_info_dir, "timing_info.json"), "wb") as f:
-        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
+    if body_model_name == "smplx":
+        smplx_layer_dict = {
+            1: smplx.create(
+                model_path="./body_models",
+                model_type="smplx",
+                gender="neutral",
+                use_pca=False,
+                num_pca_comps=45,
+                flat_hand_mean=True,
+                use_face_contour=True,
+                num_betas=10,
+                batch_size=1,
+            ).to(device),
+            len(person_ids): smplx.create(
+                model_path="./body_models",
+                model_type="smplx",
+                gender="neutral",
+                use_pca=False,
+                num_pca_comps=45,
+                flat_hand_mean=True,
+                use_face_contour=True,
+                num_betas=10,
+                batch_size=len(person_ids),
+            ).to(device),
+        }
+    else:
+        smplx_layer_dict = {
+            1: smplx.create(
+                model_path="./body_models",
+                model_type="smpl",
+                gender="neutral",
+                num_betas=10,
+                batch_size=1,
+            ).to(device),
+            len(person_ids): smplx.create(
+                model_path="./body_models",
+                model_type="smpl",
+                gender="neutral",
+                num_betas=10,
+                batch_size=len(person_ids),
+            ).to(device),
+        }
 
-    print(f"Timing info saved to {os.path.join(timing_info_dir, 'timing_info.json')}")
+    world_env = load_dust3r_init_data(world_env_path)
+    # load the initial smpl output estimated
+    images_smplx_params_dict = load_smplx_init_data(smplx_dir, body_model_name)
+    # load the 2D pose predictions
+    images_pose2d_params_dict = load_pose2d_init_data(pose2d_dir)
+    # load the bounding box predictions
+    images_bboxes_params_dict = load_bbox_init_data(bbox_dir)
+    # load the sam2 mask predictions
+    # this is just for later visualization
+    # not used for optimization
+    sam2_dir = bbox_dir.replace("json_data", "mask_data")
+    images_sam2_mask_params_dict = load_mask_init_data(sam2_dir)
+
+    results = align_world_env_and_smpl_hsfm(
+        world_env=world_env,
+        images_smplx_params_dict=images_smplx_params_dict,
+        images_pose2d_params_dict=images_pose2d_params_dict,
+        images_bboxes_params_dict=images_bboxes_params_dict,
+        images_sam2_mask_params_dict=images_sam2_mask_params_dict,
+        smplx_layer_dict=smplx_layer_dict,
+        person_ids=person_ids,
+        body_model_name=body_model_name,
+        device=device,
+        verbose=False,
+        show_progress=True,
+    )
+
+    save_results(results, body_model_name, out_dir)
 
     if vis:
-        show_optimization_results(
-            total_output["hsfm_places_cameras"],
-            body_model_name,
-            human_params,
-            smplx_layer_dict[1],
+        show_results(
+            results=results,
+            body_model_name=body_model_name,
+            smplx_layer_dict=smplx_layer_dict,
+            device=device,
         )
 
 
