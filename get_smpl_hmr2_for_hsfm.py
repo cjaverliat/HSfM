@@ -4,16 +4,14 @@
 
 import torch
 import os
-import json
 import cv2
 import numpy as np
 import tyro
 import pickle
 import orjson
 from tqdm import tqdm
-from collections import defaultdict
 from pathlib import Path
-from time import perf_counter
+from typing import Any
 
 from hmr2.configs import CACHE_DIR_4DHUMANS
 from hmr2.models import download_models, DEFAULT_CHECKPOINT, check_smpl_exists, HMR2
@@ -23,20 +21,26 @@ from hmr2.utils.renderer import Renderer, cam_crop_to_full
 
 LIGHT_BLUE = (0.65098039, 0.74117647, 0.85882353)
 
+
 def load_hmr2(checkpoint_path=DEFAULT_CHECKPOINT, config_path=""):
     from pathlib import Path
     from hmr2.configs import get_config
+
     if config_path == "":
-        model_cfg = str(Path(checkpoint_path).parent.parent / 'model_config.yaml')
+        model_cfg = str(Path(checkpoint_path).parent.parent / "model_config.yaml")
     else:
         model_cfg = config_path
     model_cfg = get_config(model_cfg, update_cachedir=True)
 
     # Override some config values, to crop bbox correctly
-    if (model_cfg.MODEL.BACKBONE.TYPE == 'vit') and ('BBOX_SHAPE' not in model_cfg.MODEL):
+    if (model_cfg.MODEL.BACKBONE.TYPE == "vit") and (
+        "BBOX_SHAPE" not in model_cfg.MODEL
+    ):
         model_cfg.defrost()
-        assert model_cfg.MODEL.IMAGE_SIZE == 256, f"MODEL.IMAGE_SIZE ({model_cfg.MODEL.IMAGE_SIZE}) should be 256 for ViT backbone"
-        model_cfg.MODEL.BBOX_SHAPE = [192,256]
+        assert model_cfg.MODEL.IMAGE_SIZE == 256, (
+            f"MODEL.IMAGE_SIZE ({model_cfg.MODEL.IMAGE_SIZE}) should be 256 for ViT backbone"
+        )
+        model_cfg.MODEL.BBOX_SHAPE = [192, 256]
         model_cfg.freeze()
 
     # Ensure SMPL model exists
@@ -45,61 +49,23 @@ def load_hmr2(checkpoint_path=DEFAULT_CHECKPOINT, config_path=""):
     model = HMR2.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
     return model, model_cfg
 
-def main(
-    model_checkpoint: str = DEFAULT_CHECKPOINT,
-    model_config: str = "",
-    img_dir: str = "./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01",
-    bbox_dir: str = "./demo_data/input_masks/arthur_tyler_pass_by_nov20/cam01/json_data",
-    output_dir: str = "./demo_data/input_3d_meshes/arthur_tyler_pass_by_nov20/cam01",
+
+def get_smpl_hmr2_for_hsfm(
+    model: HMR2,
+    images: list[np.ndarray],
+    images_bboxes: list[dict[str, np.ndarray]],
+    person_ids: list[int],
     batch_size: int = 1,
-    person_ids: list = [
-        1,
-    ],
-    timing_info_dir: str = "./demo_output/timing_info",
-    vis: bool = False,
-):
+) -> tuple[dict[int, Any], dict[int, Any]]:
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-    # Download checkpoints
-    download_models(CACHE_DIR_4DHUMANS)
-
-    load_model_start_time = perf_counter()
-    # Setup HMR2.0 model
-    model, model_cfg = load_hmr2(model_checkpoint, model_config)
-    model = model.to(device)
-    model.eval()
-    load_model_end_time = perf_counter()
-
-    # Setup the renderer
-    renderer = Renderer(model_cfg, faces=model.smpl.faces)
-
-    # Make output directory if it does not exist
-    output_dir = os.path.join(output_dir, os.path.basename(img_dir))
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    load_images_start_time = perf_counter()
-    # Get all demo images that end with .jpg or .png
-    img_paths = [img for img in Path(img_dir).glob("*.jpg")]
-    if len(img_paths) == 0:
-        img_paths = [img for img in Path(img_dir).glob("*.png")]
-    img_paths.sort()
-
-    # Iterate over all images in folder
-    print("Batchifying input images...")
     dataset_list = []
-    for img_path in tqdm(img_paths):
-        img_cv2 = cv2.imread(str(img_path))
-
-        # read bbox
-        frame_idx = int(img_path.stem.split("_")[-1])
-        bbox_path = Path(bbox_dir) / f"mask_{frame_idx:05d}.json"
-        with open(bbox_path, "r") as f:
-            bbox_data = json.load(f)
+    for image_idx, (image, image_bbox) in enumerate(tqdm(zip(images, images_bboxes))):
         # if value of "labels" key is empty, continue
-        if not bbox_data["labels"]:
+        if not image_bbox["labels"]:
             continue
         else:
-            labels = bbox_data["labels"]
+            labels = image_bbox["labels"]
             # "labels": {"1": {"instance_id": 1, "class_name": "person", "x1": 454, "y1": 399, "x2": 562, "y2": 734, "logit": 0.0}, "2": {"instance_id": 2, "class_name": "person", "x1": 45, "y1": 301, "x2": 205, "y2": 812, "logit": 0.0}}}
             label_keys = sorted(labels.keys())
 
@@ -131,47 +97,34 @@ def main(
                 continue
 
         # Run HMR2.0 on all detected humans
-        dataset = ViTDetDataset(model_cfg, img_cv2, boxes, target_person_ids, frame_idx)
+        dataset = ViTDetDataset(model.cfg, image, boxes, target_person_ids, image_idx)
         # dataloader = torch.utils.data.DataLoader(dataset, batch_size=8, shuffle=False, num_workers=0)
         dataset_list.append(dataset)
 
     concat_dataset = torch.utils.data.ConcatDataset(dataset_list)
-    load_images_end_time = perf_counter()
 
     dataloader = torch.utils.data.DataLoader(
         concat_dataset, batch_size=batch_size, shuffle=False, num_workers=0
     )
 
-    timing_info = {
-        "load_model_time": load_model_end_time - load_model_start_time,
-        "load_images_time": load_images_end_time - load_images_start_time,
-        "batch": [],
-    }
-
-    print("Running HMR2.0...")
-    result_dict = defaultdict(
-        dict
-    )  # key: frame_idx, value: dictionary with keys: 'all_verts', 'all_cam_t'
+    results = {}
+    vis_results = {}
     for batch_idx, batch in enumerate(tqdm(dataloader)):
-        inference_start_time = perf_counter()
         batch = recursive_to(batch, device)
         with torch.no_grad():
             out = model(batch)
-        inference_end_time = perf_counter()
 
-        batch_timing_info = {
-            "batch_idx": batch_idx,
-            "batch_size": batch_size,
-            "inference_time": inference_end_time - inference_start_time,
-        }
-        timing_info["batch"].append(batch_timing_info)
+        batch_size = batch["img"].shape[0]
+        batch_pred_smpl_params = out["pred_smpl_params"]
 
         pred_cam = out["pred_cam"]
         box_center = batch["box_center"].float()
         box_size = batch["box_size"].float()
         img_size = batch["img_size"].float()
+        pred_vertices = out["pred_vertices"]
+
         scaled_focal_length = (
-            model_cfg.EXTRA.FOCAL_LENGTH / model_cfg.MODEL.IMAGE_SIZE * img_size.max()
+            model.cfg.EXTRA.FOCAL_LENGTH / model.cfg.MODEL.IMAGE_SIZE * img_size.max()
         )
         pred_cam_t_full = (
             cam_crop_to_full(
@@ -182,10 +135,8 @@ def main(
             .numpy()
         )
 
-        batch_size = batch["img"].shape[0]
-        batch_pred_smpl_params = out["pred_smpl_params"]
         for n in range(batch_size):
-            frame_idx = int(batch["frame_idx"][n])
+            image_idx = int(batch["frame_idx"][n])
             person_id = int(batch["personid"][n])
 
             pred_smpl_params = {}
@@ -195,50 +146,111 @@ def main(
                     batch_pred_smpl_params[key][n].detach().cpu().numpy()
                 )
 
-            result_dict[frame_idx][person_id] = {
+            verts = pred_vertices[n].detach().cpu().numpy()
+            cam_t = pred_cam_t_full[n]
+
+            results.setdefault(image_idx, {})
+            results[image_idx][person_id] = {
                 "smpl_params": pred_smpl_params,
             }
 
-            if vis:
-                # Add all verts and cams to list
-                verts = out["pred_vertices"][n].detach().cpu().numpy()
-                cam_t = pred_cam_t_full[n]
-                # update the dictionary
-                result_dict[frame_idx][person_id]["verts"] = verts
-                result_dict[frame_idx][person_id]["cam_t"] = cam_t
-                result_dict[frame_idx][person_id]["img_size"] = img_size[n].tolist()
+            vis_results.setdefault(image_idx, {})
+            vis_results[image_idx][person_id] = {
+                "verts": verts,
+                "cam_t": cam_t,
+                "img_size": img_size[n].tolist(),
+            }
+
+    return results, vis_results
+
+
+def main(
+    model_checkpoint: str = DEFAULT_CHECKPOINT,
+    model_config: str = "",
+    img_dir: str = "./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01",
+    bbox_dir: str = "./demo_data/input_masks/arthur_tyler_pass_by_nov20/cam01/json_data",
+    output_dir: str = "./demo_data/input_3d_meshes/arthur_tyler_pass_by_nov20/cam01",
+    batch_size: int = 1,
+    person_ids: list = [
+        1,
+    ],
+    vis: bool = False,
+):
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    # Download checkpoints
+    download_models(CACHE_DIR_4DHUMANS)
+
+    # Setup HMR2.0 model
+    model, model_cfg = load_hmr2(model_checkpoint, model_config)
+    model = model.to(device)
+    model.eval()
+
+    # Setup the renderer
+    renderer = Renderer(model_cfg, faces=model.smpl.faces)
+
+    # Make output directory if it does not exist
+    output_dir = os.path.join(output_dir, os.path.basename(img_dir))
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Get all demo images that end with .jpg or .png
+    img_paths = [img for img in Path(img_dir).glob("*.jpg")]
+    if len(img_paths) == 0:
+        img_paths = [img for img in Path(img_dir).glob("*.png")]
+    img_paths.sort()
+
+    images = []
+    images_bboxes = []
+    images_indices = []
+
+    for img_path in tqdm(img_paths):
+        img_cv2 = cv2.imread(str(img_path))
+        # read bbox
+        frame_idx = int(img_path.stem.split("_")[-1])
+        bbox_path = Path(bbox_dir) / f"mask_{frame_idx:05d}.json"
+        with open(bbox_path, "r") as f:
+            bbox_data = orjson.loads(f.read())
+
+        images.append(img_cv2)
+        images_bboxes.append(bbox_data)
+        images_indices.append(frame_idx)
+
+    results, vis_results = get_smpl_hmr2_for_hsfm(
+        model=model,
+        images=images,
+        images_bboxes=images_bboxes,
+        person_ids=person_ids,
+        batch_size=batch_size,
+    )
 
     print("Saving results...")
-    save_start_time = perf_counter()
     # Save the result
-    for frame_idx in sorted(result_dict.keys()):
+    for image_idx in sorted(results.keys()):
+        frame_idx = images_indices[image_idx]
         frame_result_save_path = os.path.join(
             output_dir, f"smpl_params_{frame_idx:05d}.pkl"
         )
         with open(frame_result_save_path, "wb") as f:
-            pickle.dump(result_dict[frame_idx], f)
-    save_end_time = perf_counter()
-
-    timing_info["save_time"] = save_end_time - save_start_time
-
-    with open(os.path.join(timing_info_dir, "smpl_hmr2_timing_info.json"), "wb") as f:
-        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
-
-    print(
-        f"Timing info saved to {os.path.join(timing_info_dir, 'smpl_hmr2_timing_info.json')}"
-    )
+            pickle.dump(results[image_idx], f)
 
     # Render front view
     if vis:
         print("Rendering result overlay...")
-        for file_idx, frame_idx in enumerate(result_dict.keys()):
+        for image_idx, image in enumerate(images):
+            frame_idx = images_indices[image_idx]
             all_verts = []
             all_cam_t = []
             img_size = []
-            for person_id, result in result_dict[frame_idx].items():
+            for person_id, result in vis_results[frame_idx].items():
                 all_verts.append(result["verts"])
                 all_cam_t.append(result["cam_t"])
                 img_size.append(result["img_size"])
+
+            scaled_focal_length = (
+                model.cfg.EXTRA.FOCAL_LENGTH
+                / model.cfg.MODEL.IMAGE_SIZE
+                * torch.as_tensor(img_size).max()
+            )
 
             if len(all_verts) > 0:
                 img_size = img_size[0]
@@ -252,9 +264,7 @@ def main(
                 )
 
                 # Overlay image
-                img_fn = os.path.splitext(os.path.basename(img_paths[file_idx]))[0]
-                img_cv2 = cv2.imread(str(img_paths[file_idx]))
-                input_img = img_cv2.astype(np.float32)[:, :, ::-1] / 255.0
+                input_img = image.astype(np.float32)[:, :, ::-1] / 255.0
                 input_img = np.concatenate(
                     [input_img, np.ones_like(input_img[:, :, :1])], axis=2
                 )  # Add alpha channel
@@ -265,7 +275,7 @@ def main(
 
                 Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(
-                    os.path.join(output_dir, "vis", f"{img_fn}_all.png"),
+                    os.path.join(output_dir, "vis", f"{frame_idx:05d}_all.png"),
                     255 * input_img_overlay[:, :, ::-1],
                 )
 
