@@ -112,7 +112,7 @@ def main(
                 model=dust3r_model,
                 images=images,
                 images_indices=images_indices,
-                verbose=False,
+                verbose=True,
             )
             world_env_end_time = perf_counter()
 
@@ -164,7 +164,7 @@ def main(
                 person_ids=person_ids,
                 body_model_name="smpl",
                 device=device,
-                verbose=False,
+                verbose=True,
                 show_progress=True,
             )
             hsfm_end_time = perf_counter()
