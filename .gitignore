@@ -4,6 +4,7 @@ body_models/
 checkpoints/
 **.pyc**
 
+slurm_*.out
 .vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
