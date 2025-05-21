@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-import orjson
+import json
 
 from tqdm import tqdm
 from pathlib import Path
@@ -119,17 +119,19 @@ def get_pose2d_vitpose_for_hsfm(
     model: ViTPoseModel,
     images: list[np.ndarray],
     images_bboxes: list[dict[str, np.ndarray]],
+    images_indices: list[int],
     box_score_threshold: float = 0.5,
 ) -> dict[str, Any]:
     assert len(images) == len(images_bboxes), "Expected one bboxes dict for each image"
 
     results = {
-        "images_results": [],
-        "inference_times": [],
-        "total_inference_time": 0,
+        "images_results": {},
+        "images_inference_times": {},
     }
 
-    for image, image_bboxes in zip(images, images_bboxes):
+    for image, image_bboxes, image_idx in tqdm(
+        zip(images, images_bboxes, images_indices)
+    ):
         bboxes = []
         person_ids = []
 
@@ -146,10 +148,7 @@ def get_pose2d_vitpose_for_hsfm(
 
         # sanity check; if boxes is empty, continue
         bboxes_sum = sum([bbox["bbox"][:4].sum() for bbox in bboxes])
-        if bboxes_sum != 0:
-            image_results = {}
-            results["images_results"].append(image_results)
-            results["inference_times"].append(0)
+        if bboxes_sum == 0:
             continue
 
         inference_start_time = perf_counter()
@@ -166,10 +165,9 @@ def get_pose2d_vitpose_for_hsfm(
             image_results[person_id]["bbox"] = out[out_idx]["bbox"].tolist()
             image_results[person_id]["keypoints"] = out[out_idx]["keypoints"].tolist()
 
-        results["images_results"].append(image_results)
-        results["inference_times"].append(inference_time)
+        results["images_results"][image_idx] = image_results
+        results["images_inference_times"][image_idx] = inference_time
 
-    results["total_inference_time"] = sum(results["inference_times"])
     return results
 
 
@@ -206,8 +204,8 @@ def main(
         img_idx = int(os.path.splitext(os.path.basename(img_path))[0].split("_")[-1])
         image = cv2.imread(img_path)
         det_result_path = os.path.join(bbox_dir, f"mask_{img_idx:05d}.json")
-        with open(det_result_path, "rb") as f:
-            det_results = orjson.loads(f.read())
+        with open(det_result_path, "r") as f:
+            det_results = json.load(f)
         images.append(image)
         images_indices.append(img_idx)
         images_bboxes.append(det_results)
@@ -216,25 +214,29 @@ def main(
         model=model,
         images=images,
         images_bboxes=images_bboxes,
+        images_indices=images_indices,
         box_score_threshold=box_score_threshold,
     )
 
     # Save the pose results
-    for img_idx, img_result in zip(images_indices, results["images_results"]):
+    for img_idx, img_result in results["images_results"].items():
         pose_result_path = os.path.join(output_dir, f"pose_{img_idx:05d}.json")
-        with open(pose_result_path, "wb") as f:
-            f.write(orjson.dumps(img_result, option=orjson.OPT_INDENT_2))
+        with open(pose_result_path, "w") as f:
+            json.dump(img_result, f, indent=4)
 
     if vis:
-        for img_idx, img_result in zip(images_indices, results["images_results"]):
-            image = images[img_idx]
-            out = img_result
+        for img_idx, img_result in results["images_results"].items():
+            image = images[images_indices.index(img_idx)]
             vis_out = model.visualize_pose_results(
-                image, out, kpt_score_threshold, vis_dot_radius, vis_line_thickness
+                image,
+                list(img_result.values()),
+                kpt_score_threshold,
+                vis_dot_radius,
+                vis_line_thickness,
             )
-        vis_out_path = os.path.join(output_dir, "vis", f"pose_{img_idx:05d}.jpg")
-        Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(vis_out_path, vis_out)
+            vis_out_path = os.path.join(output_dir, "vis", f"pose_{img_idx:05d}.jpg")
+            Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(vis_out_path, vis_out)
 
 
 if __name__ == "__main__":
