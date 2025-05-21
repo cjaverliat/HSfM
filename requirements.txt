@@ -12,3 +12,5 @@ joblib
 omegaconf
 torch
 torchvision
+orjson
+requests
