@@ -395,6 +395,7 @@ def init_human_params(
     princpt,
     device="cuda",
     get_vertices=False,
+    verbose=True,
 ):
     # multiview_multiple_human_cam_pred: Dict[camera_name -> Dict[human_name -> 'pose2d', 'bbox', 'params' Dicts]]
     # multiview_multiperson_pose2d: Dict[human_name -> Dict[cam_name -> (J, 2+1)]] torch tensor
@@ -521,10 +522,12 @@ def init_human_params(
         if conf > max_conf:
             max_conf = conf
             main_human_name = human_name
-    print(
-        "The main (reference) human name for the scale initilization is: ",
-        main_human_name,
-    )
+
+    if verbose:
+        print(
+            "The main (reference) human name for the scale initilization is: ",
+            main_human_name,
+        )
 
     # Initialize Stage 2: Get the initial camera poses with respect to the first camera
     global_orient_first_cam = multiview_multiple_human_cam_pred[first_cam][
@@ -606,9 +609,10 @@ def init_human_params(
                     if missing_human_exist_cam_idx == len(
                         missing_human_names_in_first_cam[missing_human_name]
                     ):
-                        print(
-                            f"Warning: {missing_human_name} cannot be handled because it can't transform to the first camera coordinate frame"
-                        )
+                        if verbose:
+                            print(
+                                f"Warning: {missing_human_name} cannot be handled because it can't transform to the first camera coordinate frame"
+                            )
                         continue
                     other_cam_name = missing_human_names_in_first_cam[
                         missing_human_name
@@ -1421,6 +1425,7 @@ def align_world_env_and_smpl_hsfm(
         init_princpt,
         device,
         get_vertices=False,
+        verbose=verbose,
     )  # dict of human parameters
     init_human_cam_data = {
         "human_params": human_params,
@@ -1825,11 +1830,15 @@ def align_world_env_and_smpl_hsfm(
 
     return results
 
-def save_results(results: dict[str, Any], body_model_name: str, output_dir: str):
-    os.makedirs(output_dir, exist_ok=True)
-    output_name = f'hsfm_output_{body_model_name}'
-    with open(osp.join(output_dir, f'{output_name}.pkl'), "wb") as f:
+
+def save_results(results: dict[str, Any], output_path: str):
+    if not output_path.endswith(".pkl"):
+        output_path = output_path + ".pkl"
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "wb") as f:
         pickle.dump(results, f)
+
 
 def show_results(
     results: dict[str, Any],
@@ -1851,29 +1860,7 @@ def show_results(
     )
 
 
-def main(
-    world_env_path: str,
-    bbox_dir: str = "./tmp_demo_output/json_data",
-    pose2d_dir: str = "./tmp_demo_output/pose2d",
-    smplx_dir: str = "./tmp_demo_output/smplx",
-    out_dir: str = "./tmp_demo_output",
-    person_ids: List[int] = [
-        1,
-    ],
-    body_model_name: str = "smplx",
-    vis: bool = False,
-):
-    """
-    world_env_path: path to the world environment from Dust3r
-    bbox_dir: directory containing the bounding box predictions from Dust3r
-    pose2d_dir: directory containing the 2D pose predictions from Dust3r
-    smpl_dir: directory containing the SMPL model from Dust3r
-    out_dir: directory to save the aligned results after optimization
-    person_ids: list of person ids to optimize; ex) --person-ids 1 2
-    vis: whether to visualize the results
-    """
-    device = "cuda"
-
+def create_smplx_layer_dict(body_model_name: str, person_ids: List[int], device: str):
     if body_model_name == "smplx":
         smplx_layer_dict = {
             1: smplx.create(
@@ -1916,6 +1903,33 @@ def main(
                 batch_size=len(person_ids),
             ).to(device),
         }
+    return smplx_layer_dict
+
+
+def main(
+    world_env_path: str,
+    bbox_dir: str = "./tmp_demo_output/json_data",
+    pose2d_dir: str = "./tmp_demo_output/pose2d",
+    smplx_dir: str = "./tmp_demo_output/smplx",
+    out_dir: str = "./tmp_demo_output",
+    person_ids: List[int] = [
+        1,
+    ],
+    body_model_name: str = "smplx",
+    vis: bool = False,
+):
+    """
+    world_env_path: path to the world environment from Dust3r
+    bbox_dir: directory containing the bounding box predictions from Dust3r
+    pose2d_dir: directory containing the 2D pose predictions from Dust3r
+    smpl_dir: directory containing the SMPL model from Dust3r
+    out_dir: directory to save the aligned results after optimization
+    person_ids: list of person ids to optimize; ex) --person-ids 1 2
+    vis: whether to visualize the results
+    """
+    device = "cuda"
+
+    smplx_layer_dict = create_smplx_layer_dict(body_model_name, person_ids, device)
 
     world_env = load_dust3r_init_data(world_env_path)
     # load the initial smpl output estimated
@@ -1944,7 +1958,8 @@ def main(
         show_progress=True,
     )
 
-    save_results(results, body_model_name, out_dir)
+    output_path = osp.join(out_dir, f"hsfm_output_{body_model_name}.pkl")
+    save_results(results, output_path)
 
     if vis:
         show_results(
