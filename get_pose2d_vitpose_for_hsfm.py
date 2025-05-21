@@ -6,7 +6,6 @@ import os
 import glob
 import tyro
 import cv2
-import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,7 +13,7 @@ import orjson
 
 from tqdm import tqdm
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any
 from mmpose.apis import inference_top_down_pose_model, init_pose_model, vis_pose_result
 
 from time import perf_counter
@@ -116,19 +115,74 @@ class ViTPoseModel:
         return vis
 
 
+def get_pose2d_vitpose_for_hsfm(
+    model: ViTPoseModel,
+    images: list[np.ndarray],
+    images_bboxes: list[dict[str, np.ndarray]],
+    box_score_threshold: float = 0.5,
+) -> dict[str, Any]:
+    assert len(images) == len(images_bboxes), "Expected one bboxes dict for each image"
+
+    results = {
+        "images_results": [],
+        "inference_times": [],
+        "total_inference_time": 0,
+    }
+
+    for image, image_bboxes in zip(images, images_bboxes):
+        bboxes = []
+        person_ids = []
+
+        # {"mask_name": "mask_00066.npy", "mask_height": 1280, "mask_width": 720, "promote_type": "mask", "labels": {"1": {"instance_id": 1, "class_name": "person", "x1": 501, "y1": 418, "x2": 711, "y2": 765, "logit": 0.0}, "2": {"instance_id": 2, "class_name": "person", "x1": 0, "y1": 300, "x2": 155, "y2": 913, "logit": 0.0}}}
+        # 1: {"instance_id": 1, "class_name": "person", "x1": 501, "y1": 418, "x2": 711, "y2": 765, "logit": 0.0}
+        # 2: {"instance_id": 2, "class_name": "person", "x1": 0, "y1": 300, "x2": 155, "y2": 913, "logit": 0.0}
+        # If labels is empty, skip the frame
+        for box in image_bboxes["labels"].values():
+            bbox_dict = {
+                "bbox": np.array([box["x1"], box["y1"], box["x2"], box["y2"], 1.0])
+            }
+            bboxes.append(bbox_dict)
+            person_ids.append(box["instance_id"])
+
+        # sanity check; if boxes is empty, continue
+        bboxes_sum = sum([bbox["bbox"][:4].sum() for bbox in bboxes])
+        if bboxes_sum != 0:
+            image_results = {}
+            results["images_results"].append(image_results)
+            results["inference_times"].append(0)
+            continue
+
+        inference_start_time = perf_counter()
+        out = model.predict_pose(image, bboxes, box_score_threshold)
+        inference_end_time = perf_counter()
+        inference_time = inference_end_time - inference_start_time
+
+        # out: List[Dict[str, np.ndarray]]; keys: bbox, keypoints. values are numpy arrays
+        # convert values to lists
+        image_results = {}
+
+        for out_idx, person_id in enumerate(person_ids):
+            image_results[person_id] = {}
+            image_results[person_id]["bbox"] = out[out_idx]["bbox"].tolist()
+            image_results[person_id]["keypoints"] = out[out_idx]["keypoints"].tolist()
+
+        results["images_results"].append(image_results)
+        results["inference_times"].append(inference_time)
+
+    results["total_inference_time"] = sum(results["inference_times"])
+    return results
+
+
 def main(
     img_dir: str = "./demo_data/input_images/arthur_tyler_pass_by_nov20/cam01",
     bbox_dir: str = "./demo_data/input_masks/arthur_tyler_pass_by_nov20/cam01/json_data",
     output_dir: str = "./demo_data/input_2d_poses/arthur_tyler_pass_by_nov20/cam01",
     model_config: str = "./configs/vitpose/ViTPose_huge_wholebody_256x192.py",
     model_checkpoint: str = "./checkpoints/vitpose_huge_wholebody.pth",
-    timing_info_dir: str = "./demo_output/timing_info",
     vis: bool = False,
 ):
     # Load the model
-    load_model_start_time = perf_counter()
     model = ViTPoseModel(model_config=model_config, model_checkpoint=model_checkpoint)
-    load_model_end_time = perf_counter()
 
     # Pose estimation configuration
     box_score_threshold = 0.5
@@ -139,90 +193,48 @@ def main(
     output_dir = os.path.join(output_dir, os.path.basename(img_dir))
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    timing_info = {
-        "model_loading_time": load_model_end_time - load_model_start_time,
-        "images": []
-    }
-
     # Run per image
     img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
     if img_path_list == []:
         img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.png")))
 
+    images = []
+    images_bboxes = []
+    images_indices = []
+
     for img_idx, img_path in tqdm(enumerate(img_path_list), total=len(img_path_list)):
-        load_data_start_time = perf_counter()
         img_idx = int(os.path.splitext(os.path.basename(img_path))[0].split("_")[-1])
         image = cv2.imread(img_path)
         det_result_path = os.path.join(bbox_dir, f"mask_{img_idx:05d}.json")
-        bboxes = []
-        person_ids = []
-        with open(det_result_path, "r") as f:
-            det_results = json.load(f)
-            # {"mask_name": "mask_00066.npy", "mask_height": 1280, "mask_width": 720, "promote_type": "mask", "labels": {"1": {"instance_id": 1, "class_name": "person", "x1": 501, "y1": 418, "x2": 711, "y2": 765, "logit": 0.0}, "2": {"instance_id": 2, "class_name": "person", "x1": 0, "y1": 300, "x2": 155, "y2": 913, "logit": 0.0}}}
-            # 1: {"instance_id": 1, "class_name": "person", "x1": 501, "y1": 418, "x2": 711, "y2": 765, "logit": 0.0}
-            # 2: {"instance_id": 2, "class_name": "person", "x1": 0, "y1": 300, "x2": 155, "y2": 913, "logit": 0.0}
-            # If labels is empty, skip the frame
-            if len(det_results["labels"]) == 0:
-                continue
-            for box in det_results["labels"].values():
-                bbox_dict = {
-                    "bbox": np.array([box["x1"], box["y1"], box["x2"], box["y2"], 1.0])
-                }
-                bboxes.append(bbox_dict)
-                person_ids.append(box["instance_id"])
+        with open(det_result_path, "rb") as f:
+            det_results = orjson.loads(f.read())
+        images.append(image)
+        images_indices.append(img_idx)
+        images_bboxes.append(det_results)
 
-            # sanity check; if boxes is empty, continue
-            bboxes_sum = sum([bbox["bbox"][:4].sum() for bbox in bboxes])
-            if bboxes_sum == 0:
-                continue
-        load_data_end_time = perf_counter()
+    results = get_pose2d_vitpose_for_hsfm(
+        model=model,
+        images=images,
+        images_bboxes=images_bboxes,
+        box_score_threshold=box_score_threshold,
+    )
 
-        model_inference_start_time = perf_counter()
-        out = model.predict_pose(image, bboxes, box_score_threshold)
-        model_inference_end_time = perf_counter()
-
-        save_start_time = perf_counter()
-        # out: List[Dict[str, np.ndarray]]; keys: bbox, keypoints. values are numpy arrays
-        # convert values to lists
-        save_out = {}
-
-        for out_idx, person_id in enumerate(person_ids):
-            save_out[person_id] = {}
-            for key in ["bbox", "keypoints"]:
-                save_out[person_id][key] = out[out_idx][key].tolist()
-
-        # Save the pose results
+    # Save the pose results
+    for img_idx, img_result in zip(images_indices, results["images_results"]):
         pose_result_path = os.path.join(output_dir, f"pose_{img_idx:05d}.json")
-        with open(pose_result_path, "w") as f:
-            json.dump(save_out, f)
+        with open(pose_result_path, "wb") as f:
+            f.write(orjson.dumps(img_result, option=orjson.OPT_INDENT_2))
 
-        if vis:
+    if vis:
+        for img_idx, img_result in zip(images_indices, results["images_results"]):
+            image = images[img_idx]
+            out = img_result
             vis_out = model.visualize_pose_results(
                 image, out, kpt_score_threshold, vis_dot_radius, vis_line_thickness
             )
-            vis_out_path = os.path.join(output_dir, "vis", f"pose_{img_idx:05d}.jpg")
-            Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(vis_out_path, vis_out)
-
-        save_end_time = perf_counter()
-
-        img_timing_info = {
-            "img_idx": img_idx,
-            "img_path": img_path,
-            "load_data_time": load_data_end_time - load_data_start_time,
-            "model_inference_time": model_inference_end_time
-            - model_inference_start_time,
-            "save_time": save_end_time - save_start_time,
-        }
-
-        timing_info["images"].append(img_timing_info)
-
-    timing_info_file = os.path.join(timing_info_dir, "pose2d_vitpose_timing_info.json")
-    os.makedirs(timing_info_dir, exist_ok=True)
-    with open(timing_info_file, "wb") as f:
-        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
-
-    print(f"Timing info saved to {timing_info_file}")
+        vis_out_path = os.path.join(output_dir, "vis", f"pose_{img_idx:05d}.jpg")
+        Path(os.path.join(output_dir, "vis")).mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(vis_out_path, vis_out)
 
 
 if __name__ == "__main__":
