@@ -11,16 +11,15 @@ import pickle
 import tyro
 import PIL
 import cv2
-import orjson
-from pathlib import Path
+import torch
+from typing import Any
 
+from dust3r.utils.image import ImgNorm
 from dust3r.inference import inference
 from dust3r.image_pairs import make_pairs
-from dust3r.utils.image import load_images
 from dust3r.utils.device import to_numpy
 from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
-
-from time import perf_counter
+from dust3r.model import AsymmetricCroCo3DStereo
 
 
 def transform_keypoints(homogeneous_keypoints: np.ndarray, affine_matrix: np.ndarray):
@@ -91,8 +90,9 @@ def check_affine_matrix(
 
 
 # hard coding to get the affine transform matrix
-def preprocess_and_get_transform(file, size=512, square_ok=False):
-    img = PIL.Image.open(file)
+def preprocess_and_get_transform(image: np.ndarray, size=512, square_ok=False):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    img = PIL.Image.fromarray(image)
     original_width, original_height = img.size
 
     # Step 1: Resize
@@ -129,30 +129,43 @@ def preprocess_and_get_transform(file, size=512, square_ok=False):
 
 
 def get_reconstructed_scene(
-    model,
-    device,
-    silent,
-    image_size,
-    filelist,
-    schedule,
-    niter,
-    scenegraph_type,
-    winsize,
-    refid,
+    model: AsymmetricCroCo3DStereo,
+    images: list[np.ndarray],
+    image_size: int,
+    schedule: str,
+    niter: int,
+    scenegraph_type: str,
+    winsize: int,
+    refid: int,
+    device: torch.device,
+    silent: bool,
 ):
     """
     from a list of images, run dust3r inference, global aligner.
     then run get_3D_model_from_scene
     """
-    imgs = load_images(filelist, size=image_size, verbose=not silent)
 
     # get affine transform matrix list
     affine_matrix_list = []
-    # img_cropped_list = []
-    for file in filelist:
-        img_cropped, affine_matrix = preprocess_and_get_transform(file)
+    cropped_images = []
+    for image in images:
+        img_cropped, affine_matrix = preprocess_and_get_transform(
+            image, size=image_size
+        )
         affine_matrix_list.append(affine_matrix)
-        # img_cropped_list.append(img_cropped)
+        cropped_images.append(img_cropped)
+
+    imgs = []
+
+    for cropped_image in cropped_images:
+        imgs.append(
+            dict(
+                img=ImgNorm(cropped_image)[None],
+                true_shape=np.int32([cropped_image.size[::-1]]),
+                idx=len(imgs),
+                instance=str(len(imgs)),
+            )
+        )
 
     # CHECK the first image
     # test_img = img_cropped_list[0]
@@ -214,35 +227,20 @@ def get_reconstructed_scene(
     )
 
 
-def main(
-    model_path: str = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
-    out_pkl_dir: str = "./demo_output/input_dust3r",
-    img_dir: str = "./demo_data/input_images/bww_stairs_nov17",
-    timing_info_dir: str = "./demo_output/timing_info",
-):
-    # parameters
-    device = "cuda"
-    silent = False
-    image_size = 512
-    # there are image diriectories for each view video
-    filelist = sorted(glob.glob(os.path.join(img_dir, "*.png")))
-    if filelist == []:
-        filelist = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
+def get_world_env_dust3r_for_hsfm(
+    model: AsymmetricCroCo3DStereo,
+    images: list[np.ndarray],
+    images_indices: list[int],
+    image_size: int = 512,
+    schedule: str = "linear",
+    niter: int = 300,
+    scenegraph_type: str = "complete",
+    winsize: int = 1,
+    refid: int = 0,
+    silent: bool = False,
+) -> dict[str, Any]:
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-    schedule = "linear"
-    niter = 300
-    scenegraph_type = "complete"
-    winsize = 1
-    refid = 0
-
-    load_model_start_time = perf_counter()
-    # Load your model here
-    from dust3r.model import AsymmetricCroCo3DStereo
-
-    model = AsymmetricCroCo3DStereo.from_pretrained(model_path).to(device)
-    load_model_end_time = perf_counter()
-
-    inference_start_time = perf_counter()
     (
         rgbimg,
         intrinsics,
@@ -254,57 +252,90 @@ def main(
         affine_matrix_list,
         output,
     ) = get_reconstructed_scene(
-        model,
-        device,
-        silent,
-        image_size,
-        filelist,
-        schedule,
-        niter,
-        scenegraph_type,
-        winsize,
-        refid,
+        model=model,
+        images=images,
+        image_size=image_size,
+        schedule=schedule,
+        niter=niter,
+        scenegraph_type=scenegraph_type,
+        winsize=winsize,
+        refid=refid,
+        silent=silent,
+        device=device,
     )
-    inference_end_time = perf_counter()
-    timing_info = {
-        "loading_time": load_model_end_time - load_model_start_time,
-        "inference_time": inference_end_time - inference_start_time,
+
+    return {
+        "dust3r_network_output": output,
+        "dust3r_ga_output": {
+            image_idx: {
+                "rgbimg": rgbimg[i],
+                "intrinsics": intrinsics[i],
+                "cams2world": cams2world[i],
+                "pts3d": pts3d[i],
+                "depths": depths[i],
+                "msk": msk[i],
+                "confs": confs[i],
+                "affine_matrix": affine_matrix_list[i],
+            }
+            for i, image_idx in enumerate(images_indices)
+        },
     }
 
-    # Save the results as a pickle file
-    results = {}
-    for i, f in enumerate(filelist):
-        # strip the extension
-        img_name = osp.basename(f).split(".")[0]
-        results[img_name] = {
-            "rgbimg": rgbimg[i],
-            "intrinsic": intrinsics[i],
-            "cam2world": cams2world[i],
-            "pts3d": pts3d[i],
-            "depths": depths[i],
-            "msk": msk[i],
-            "conf": confs[i],
-            "affine_matrix": affine_matrix_list[i],
-        }
 
-    total_output = {"dust3r_network_output": output, "dust3r_ga_output": results}
-    out_pkl_dir = osp.join(out_pkl_dir, osp.basename(img_dir))
-    Path(out_pkl_dir).mkdir(parents=True, exist_ok=True)
-    model_name = osp.basename(model_path).split("_")[0].lower()
-    output_file = osp.join(
-        out_pkl_dir, f"{model_name}_reconstruction_results_{osp.basename(img_dir)}.pkl"
-    )
+def save_results(
+    results: dict[str, Any],
+    output_dir: str,
+):
+    output_file = osp.join(output_dir, "dust3r_reconstruction_results.pkl")
+    os.makedirs(output_dir, exist_ok=True)
     with open(output_file, "wb") as f:
-        pickle.dump(total_output, f)
+        pickle.dump(results, f)
 
-    print(f"Results saved to {output_file}")
 
-    timing_info_file = os.path.join(timing_info_dir, "world_env_dust3r_timing_info.json")
-    os.makedirs(timing_info_dir, exist_ok=True)
-    with open(timing_info_file, "wb") as f:
-        f.write(orjson.dumps(timing_info, option=orjson.OPT_INDENT_2))
+def main(
+    model_path: str = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
+    out_pkl_dir: str = "./demo_output/input_dust3r",
+    img_dir: str = "./demo_data/input_images/bww_stairs_nov17",
+):
+    img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.png")))
+    if img_path_list == []:
+        img_path_list = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
 
-    print(f"Timing info saved to {timing_info_file}")
+    images = []
+    images_indices = []
+
+    for img_path in img_path_list:
+        img_idx = int(os.path.splitext(os.path.basename(img_path))[0].split("_")[-1])
+        image = cv2.imread(img_path)
+        images.append(image)
+        images_indices.append(img_idx)
+
+    # parameters
+    device = "cuda"
+    silent = False
+    image_size = 512
+    schedule = "linear"
+    niter = 300
+    scenegraph_type = "complete"
+    winsize = 1
+    refid = 0
+
+    model = AsymmetricCroCo3DStereo.from_pretrained(model_path).to(device)
+
+    results = get_world_env_dust3r_for_hsfm(
+        model=model,
+        images=images,
+        images_indices=images_indices,
+        image_size=image_size,
+        schedule=schedule,
+        niter=niter,
+        scenegraph_type=scenegraph_type,
+        winsize=winsize,
+        refid=refid,
+        silent=silent,
+    )
+
+    save_results(results, out_pkl_dir)
 
 
 if __name__ == "__main__":
