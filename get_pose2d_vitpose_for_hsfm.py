@@ -113,6 +113,18 @@ class ViTPoseModel:
         )
         return vis
 
+def load_vitpose_model(
+    model_path: str = "./checkpoints/vitpose_huge_wholebody.pth",
+    model_config_path: str = "./configs/vitpose/ViTPose_huge_wholebody_256x192.py",
+    device: str = "cuda",
+):
+    model = ViTPoseModel(
+        model_config=model_config_path,
+        model_checkpoint=model_path,
+        device=device,
+    )
+    model.model.eval()
+    return model
 
 def get_pose2d_vitpose_for_hsfm(
     model: ViTPoseModel,

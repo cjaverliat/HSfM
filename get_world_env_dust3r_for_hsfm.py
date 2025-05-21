@@ -292,6 +292,17 @@ def save_results(
         pickle.dump(results, f)
 
 
+def load_dust3r_model(
+    model_path: str = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
+    device: str | None = None,
+):
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AsymmetricCroCo3DStereo.from_pretrained(model_path).to(device)
+    model.eval()
+    return model
+
+
 def main(
     model_path: str = "./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
     out_pkl_dir: str = "./demo_output/input_dust3r",

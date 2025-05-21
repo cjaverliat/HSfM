@@ -49,6 +49,15 @@ def load_hmr2(checkpoint_path=DEFAULT_CHECKPOINT, config_path=""):
     model = HMR2.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
     return model, model_cfg
 
+def load_smpl_hmr2_model(
+    model_path: str = DEFAULT_CHECKPOINT,
+    model_config_path: str = "",
+    device: str = "cuda",
+):
+    model, _ = load_hmr2(model_path, model_config_path)
+    model = model.to(device)
+    model.eval()
+    return model
 
 def get_smpl_hmr2_for_hsfm(
     model: HMR2,
