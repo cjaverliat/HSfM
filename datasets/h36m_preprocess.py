@@ -371,8 +371,8 @@ def _generate_protocol1_annotations(
         )
 
         # Downsample to 10Hz
-        n_frames = min(keypoints_3d_world.shape[0], min(cameras_n_frames))
-        keypoints_3d_world = keypoints_3d_world[:n_frames][::5]
+        n_frames = min(keypoints_3d_world.shape[0], min(cameras_n_frames)) // 5
+        keypoints_3d_world = keypoints_3d_world[::5][:n_frames]
         n_frames = keypoints_3d_world.shape[0]
 
         keypoints_2d = torch.zeros((n_frames, n_cameras, n_keypoints, 2))
