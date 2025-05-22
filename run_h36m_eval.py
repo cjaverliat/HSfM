@@ -109,6 +109,7 @@ def main(
             valid_inputs = True
 
             images_loading_time = 0
+            bboxes_loading_time = 0
 
             # Load the image for each camera
             images = []
@@ -134,8 +135,11 @@ def main(
                 image_loading_end_time = perf_counter()
                 images_loading_time += image_loading_end_time - image_loading_start_time
 
+                bbox_loading_start_time = perf_counter()
                 with open(bbox_path, "r") as f:
                     image_bboxes = json.load(f)
+                bbox_loading_end_time = perf_counter()
+                bboxes_loading_time += bbox_loading_end_time - bbox_loading_start_time
 
                 images.append(image)
                 images_indices.append(camera_idx)
@@ -218,6 +222,7 @@ def main(
             timing_info = {
                 "n_views": len(images),
                 "images_loading_time_seconds": images_loading_time,
+                "bboxes_loading_time_seconds": bboxes_loading_time,
                 "world_env_time_seconds": world_env_end_time - world_env_start_time,
                 "pose2d_time_seconds": pose2d_end_time - pose2d_start_time,
                 "smpl_time_seconds": smpl_end_time - smpl_start_time,
