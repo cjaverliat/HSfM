@@ -66,15 +66,13 @@ def main(
         device=device,
     )
 
-    seq_timing_info = {}
-
     for seq in sequences:
-        seq_start_time = perf_counter()
-
         subject_name = seq["subject_name"]
         subaction_name = seq["subaction_name"]
-
         n_annotated_frames = seq["n_annotated_frames"]
+
+        hsfm_output_dir = os.path.join(output_dir, f"{subject_name}_{subaction_name}")
+        os.makedirs(hsfm_output_dir, exist_ok=True)
 
         for frame_idx in range(n_annotated_frames):
             pbar.set_postfix(
@@ -82,6 +80,20 @@ def main(
                 subaction_name=subaction_name,
                 frame_idx=frame_idx,
             )
+
+            timing_info_path = os.path.join(
+                hsfm_output_dir, f"timing_info_{frame_idx:05d}.json"
+            )
+            hsfm_output_path = os.path.join(
+                hsfm_output_dir, f"hsfm_output_smpl_{frame_idx:05d}.pkl"
+            )
+
+            if os.path.exists(timing_info_path) and os.path.exists(hsfm_output_path):
+                print(
+                    f"Sequence {subject_name} {subaction_name} frame {frame_idx} already processed. Skipping..."
+                )
+                pbar.update(1)
+                continue
 
             frame_idx_str = f"{frame_idx:05d}"
             frame_inputs_dir = os.path.join(
@@ -173,10 +185,6 @@ def main(
                 show_progress=True,
             )
             hsfm_end_time = perf_counter()
-            hsfm_output_dir = os.path.join(
-                output_dir, f"{subject_name}_{subaction_name}"
-            )
-            os.makedirs(hsfm_output_dir, exist_ok=True)
 
             timing_info = {
                 "n_views": len(images),
@@ -186,15 +194,9 @@ def main(
                 "hsfm_time_seconds": hsfm_end_time - hsfm_start_time,
             }
 
-            timing_info_path = os.path.join(
-                hsfm_output_dir, f"timing_info_{frame_idx:05d}.json"
-            )
             with open(timing_info_path, "w") as f:
                 json.dump(timing_info, f)
 
-            hsfm_output_path = os.path.join(
-                hsfm_output_dir, f"hsfm_output_smpl_{frame_idx:05d}.pkl"
-            )
             save_hsfm_results(results=hsfm_results, output_path=hsfm_output_path)
 
             if vis:
@@ -207,16 +209,7 @@ def main(
 
             pbar.update(1)
 
-        seq_end_time = perf_counter()
-
-        seq_timing_info[f"{subject_name}_{subaction_name}"] = (
-            seq_end_time - seq_start_time
-        )
-
     pbar.close()
-
-    with open(os.path.join(output_dir, "seq_timing_info.json"), "w") as f:
-        f.write(orjson.dumps(seq_timing_info))
 
 
 if __name__ == "__main__":
