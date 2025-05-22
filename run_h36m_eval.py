@@ -15,6 +15,7 @@ from align_world_env_and_smpl_hsfm_optim import (
     show_results as show_hsfm_results,
     save_results as save_hsfm_results,
 )
+import warnings
 from time import perf_counter
 import cv2
 import numpy as np
@@ -103,6 +104,8 @@ def main(
                 processed_dataset_dir, seq["bboxes_rel_root_dir"], frame_idx_str
             )
 
+            valid_inputs = True
+
             # Load the image for each camera
             images = []
             images_bboxes = []
@@ -112,9 +115,15 @@ def main(
                 bbox_path = os.path.join(bbox_inputs_dir, f"mask_{camera_idx:05d}.json")
 
                 if not os.path.exists(image_path):
-                    raise FileNotFoundError(f"Image not found: {image_path}")
+                    warnings.warn(
+                        f"Image not found: {image_path}. Skipping frame {frame_idx} for subject {subject_name} and subaction {subaction_name} camera {camera_idx}"
+                    )
+                    valid_inputs = False
                 if not os.path.exists(bbox_path):
-                    raise FileNotFoundError(f"Bbox not found: {bbox_path}")
+                    warnings.warn(
+                        f"Bbox not found: {bbox_path}. Skipping frame {frame_idx} for subject {subject_name} and subaction {subaction_name} camera {camera_idx}"
+                    )
+                    valid_inputs = False
 
                 image = cv2.imread(image_path)
                 with open(bbox_path, "r") as f:
@@ -123,6 +132,10 @@ def main(
                 images.append(image)
                 images_indices.append(camera_idx)
                 images_bboxes.append(image_bboxes)
+
+            if not valid_inputs:
+                pbar.update(1)
+                continue
 
             world_env_start_time = perf_counter()
             world_env_results = get_world_env_dust3r_for_hsfm(
