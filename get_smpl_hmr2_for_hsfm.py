@@ -66,6 +66,7 @@ def get_smpl_hmr2_for_hsfm(
     images_indices: list[int],
     person_ids: list[int],
     batch_size: int = 1,
+    show_progress: bool = False,
 ) -> tuple[dict[int, Any], dict[int, Any]]:
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -121,7 +122,7 @@ def get_smpl_hmr2_for_hsfm(
 
     results = {}
     vis_results = {}
-    for batch_idx, batch in enumerate(tqdm(dataloader)):
+    for batch in tqdm(dataloader, disable=not show_progress):
         batch = recursive_to(batch, device)
         with torch.no_grad():
             out = model(batch)
