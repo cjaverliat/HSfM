@@ -31,6 +31,8 @@ def main(
     print("CUDA available: ", torch.cuda.is_available())
     print("Current device: ", torch.cuda.get_device_name(torch.cuda.current_device()))
 
+    torch.backends.cuda.matmul.allow_tf32 = True
+
     with open(
         os.path.join(processed_dataset_dir, "h36m_protocol1_sequences.json"), "rb"
     ) as f:
@@ -106,6 +108,8 @@ def main(
 
             valid_inputs = True
 
+            images_loading_time = 0
+
             # Load the image for each camera
             images = []
             images_bboxes = []
@@ -125,7 +129,11 @@ def main(
                     )
                     valid_inputs = False
 
+                image_loading_start_time = perf_counter()
                 image = cv2.imread(image_path)
+                image_loading_end_time = perf_counter()
+                images_loading_time += image_loading_end_time - image_loading_start_time
+
                 with open(bbox_path, "r") as f:
                     image_bboxes = json.load(f)
 
@@ -138,24 +146,29 @@ def main(
                 continue
 
             world_env_start_time = perf_counter()
+            torch.cuda.synchronize()
             world_env_results = get_world_env_dust3r_for_hsfm(
                 model=dust3r_model,
                 images=images,
                 images_indices=images_indices,
                 verbose=True,
             )
+            torch.cuda.synchronize()
             world_env_end_time = perf_counter()
 
             pose2d_start_time = perf_counter()
+            torch.cuda.synchronize()
             pose2d_results = get_pose2d_vitpose_for_hsfm(
                 model=vitpose_model,
                 images=images,
                 images_bboxes=images_bboxes,
                 images_indices=images_indices,
             )
+            torch.cuda.synchronize()
             pose2d_end_time = perf_counter()
 
             smpl_start_time = perf_counter()
+            torch.cuda.synchronize()
             smpl_results, _ = get_smpl_hmr2_for_hsfm(
                 model=smpl_hmr2_model,
                 images=images,
@@ -164,6 +177,7 @@ def main(
                 person_ids=person_ids,
                 batch_size=1,
             )
+            torch.cuda.synchronize()
             smpl_end_time = perf_counter()
 
             # Convert the bboxes
@@ -184,6 +198,7 @@ def main(
                     images_bboxes_params_dict[image_idx][person_id] = bbox
 
             hsfm_start_time = perf_counter()
+            torch.cuda.synchronize()
             hsfm_results = align_world_env_and_smpl_hsfm(
                 world_env=world_env_results,
                 images_smplx_params_dict=smpl_results,
@@ -197,10 +212,12 @@ def main(
                 verbose=True,
                 show_progress=True,
             )
+            torch.cuda.synchronize()
             hsfm_end_time = perf_counter()
 
             timing_info = {
                 "n_views": len(images),
+                "images_loading_time_seconds": images_loading_time,
                 "world_env_time_seconds": world_env_end_time - world_env_start_time,
                 "pose2d_time_seconds": pose2d_end_time - pose2d_start_time,
                 "smpl_time_seconds": smpl_end_time - smpl_start_time,
