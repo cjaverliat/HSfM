@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=hsfm_h36m_eval
+#SBATCH --job-name=hsfm_h36m_eval_split7
 
 #SBATCH --partition=gpu_p5
 #SBATCH --nodes=1
@@ -12,7 +12,7 @@
 #SBATCH -C a100
 
 #SBATCH --hint=nomultithread         # hyperthreading deactivated
-#SBATCH --time=19:55:00              # maximum execution time requested (HH:MM:SS)
+#SBATCH --time=19:50:00              # maximum execution time requested (HH:MM:SS)
 #SBATCH --output=slurm_%j.out
 #SBATCH --error=slurm_%j.out
 
@@ -23,4 +23,7 @@ module load pytorch-gpu/py3/2.0.1
 # echo of commands
 set -x
 
-srun python -u run_h36m_eval.py --processed-dataset-dir /lustre/fsn1/projects/rech/rch/uoe13eg/datasets/h36m_processed_hsfm --output-dir /lustre/fsn1/projects/rech/rch/uoe13eg/hsfm_h36m_eval
+srun python -u run_h36m_eval.py --processed-dataset-dir \
+/lustre/fsn1/projects/rech/rch/uoe13eg/datasets/h36m_processed_hsfm \
+--output-dir /lustre/fsn1/projects/rech/rch/uoe13eg/hsfm_h36m_eval \
+--sequences-start-idx 48

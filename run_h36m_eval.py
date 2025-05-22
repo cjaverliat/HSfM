@@ -26,7 +26,8 @@ import torch
 def main(
     processed_dataset_dir: str = "./data/h36m/processed/",
     output_dir: str = "./data_output/h36m/",
-    sequences_range: tuple[int, int] = (0, -1),
+    sequences_start_idx: int = 0,
+    sequences_end_idx: int = -1,
     vis: bool = False,
 ):
     print("CUDA available: ", torch.cuda.is_available())
@@ -39,22 +40,22 @@ def main(
     ) as f:
         sequences = orjson.loads(f.read())
 
-    if sequences_range[1] == -1:
-        sequences_range = (0, len(sequences))
+    if sequences_end_idx == -1:
+        sequences_end_idx = len(sequences)
 
-    if sequences_range[0] < 0 or sequences_range[1] > len(sequences):
-            raise ValueError(
-                f"Invalid sequences range: {sequences_range}. Must be between 0 and {len(sequences)}"
-            )
-    if sequences_range[0] > sequences_range[1]:
+    if sequences_start_idx < 0 or sequences_end_idx > len(sequences):
         raise ValueError(
-            f"Invalid sequences range: {sequences_range}. Must be between 0 and {len(sequences)}"
+            f"Invalid sequences range: {sequences_start_idx} {sequences_end_idx}. Must be in range [0, {len(sequences)}["
         )
-    sequences = sequences[sequences_range[0] : sequences_range[1]]
+    if sequences_start_idx > sequences_end_idx:
+        raise ValueError(
+            f"Invalid sequences range: {sequences_start_idx} {sequences_end_idx}. Must be in range [0, {len(sequences)}["
+        )
+    sequences = sequences[sequences_start_idx:sequences_end_idx + 1]
 
     if len(sequences) == 0:
         raise ValueError(
-            f"No sequences to process. Please check the sequences range: {sequences_range}"
+            f"No sequences to process. Please check the sequences range: {sequences_start_idx} {sequences_end_idx}"
         )
 
     seq_names = [f"{seq['subject_name']}_{seq['subaction_name']}" for seq in sequences]
