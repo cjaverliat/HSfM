@@ -26,6 +26,7 @@ import torch
 def main(
     processed_dataset_dir: str = "./data/h36m/processed/",
     output_dir: str = "./data_output/h36m/",
+    sequences_range: tuple[int, int] = (0, -1),
     vis: bool = False,
 ):
     print("CUDA available: ", torch.cuda.is_available())
@@ -37,6 +38,27 @@ def main(
         os.path.join(processed_dataset_dir, "h36m_protocol1_sequences.json"), "rb"
     ) as f:
         sequences = orjson.loads(f.read())
+
+    if sequences_range[1] == -1:
+        sequences_range = (0, len(sequences))
+
+    if sequences_range[0] < 0 or sequences_range[1] > len(sequences):
+            raise ValueError(
+                f"Invalid sequences range: {sequences_range}. Must be between 0 and {len(sequences)}"
+            )
+    if sequences_range[0] > sequences_range[1]:
+        raise ValueError(
+            f"Invalid sequences range: {sequences_range}. Must be between 0 and {len(sequences)}"
+        )
+    sequences = sequences[sequences_range[0] : sequences_range[1]]
+
+    if len(sequences) == 0:
+        raise ValueError(
+            f"No sequences to process. Please check the sequences range: {sequences_range}"
+        )
+
+    seq_names = [f"{seq['subject_name']}_{seq['subaction_name']}" for seq in sequences]
+    print(f"Processing {len(sequences)} sequences: {', '.join(seq_names)}")
 
     total_frames = sum([seq["n_annotated_frames"] for seq in sequences])
 
@@ -155,7 +177,7 @@ def main(
                 model=dust3r_model,
                 images=images,
                 images_indices=images_indices,
-                verbose=True,
+                verbose=False,
             )
             torch.cuda.synchronize()
             world_env_end_time = perf_counter()
@@ -180,6 +202,7 @@ def main(
                 images_indices=images_indices,
                 person_ids=person_ids,
                 batch_size=1,
+                show_progress=False,
             )
             torch.cuda.synchronize()
             smpl_end_time = perf_counter()
@@ -213,8 +236,8 @@ def main(
                 person_ids=person_ids,
                 body_model_name="smpl",
                 device=device,
-                verbose=True,
-                show_progress=True,
+                verbose=False,
+                show_progress=False,
             )
             torch.cuda.synchronize()
             hsfm_end_time = perf_counter()
