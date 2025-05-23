@@ -19,7 +19,7 @@ import warnings
 from time import perf_counter
 import cv2
 import numpy as np
-
+import pickle
 import torch
 
 
@@ -51,7 +51,7 @@ def main(
         raise ValueError(
             f"Invalid sequences range: {sequences_start_idx} {sequences_end_idx}. Must be in range [0, {len(sequences)}["
         )
-    sequences = sequences[sequences_start_idx:sequences_end_idx + 1]
+    sequences = sequences[sequences_start_idx : sequences_end_idx + 1]
 
     if len(sequences) == 0:
         raise ValueError(
@@ -172,76 +172,87 @@ def main(
                 pbar.update(1)
                 continue
 
-            world_env_start_time = perf_counter()
-            torch.cuda.synchronize()
-            world_env_results = get_world_env_dust3r_for_hsfm(
-                model=dust3r_model,
-                images=images,
-                images_indices=images_indices,
-                verbose=False,
-            )
-            torch.cuda.synchronize()
-            world_env_end_time = perf_counter()
+            try:
+                world_env_start_time = perf_counter()
+                torch.cuda.synchronize()
+                world_env_results = get_world_env_dust3r_for_hsfm(
+                    model=dust3r_model,
+                    images=images,
+                    images_indices=images_indices,
+                    verbose=False,
+                )
+                torch.cuda.synchronize()
+                world_env_end_time = perf_counter()
 
-            pose2d_start_time = perf_counter()
-            torch.cuda.synchronize()
-            pose2d_results = get_pose2d_vitpose_for_hsfm(
-                model=vitpose_model,
-                images=images,
-                images_bboxes=images_bboxes,
-                images_indices=images_indices,
-            )
-            torch.cuda.synchronize()
-            pose2d_end_time = perf_counter()
+                pose2d_start_time = perf_counter()
+                torch.cuda.synchronize()
+                pose2d_results = get_pose2d_vitpose_for_hsfm(
+                    model=vitpose_model,
+                    images=images,
+                    images_bboxes=images_bboxes,
+                    images_indices=images_indices,
+                )
+                torch.cuda.synchronize()
+                pose2d_end_time = perf_counter()
 
-            smpl_start_time = perf_counter()
-            torch.cuda.synchronize()
-            smpl_results, _ = get_smpl_hmr2_for_hsfm(
-                model=smpl_hmr2_model,
-                images=images,
-                images_bboxes=images_bboxes,
-                images_indices=images_indices,
-                person_ids=person_ids,
-                batch_size=1,
-                show_progress=False,
-            )
-            torch.cuda.synchronize()
-            smpl_end_time = perf_counter()
+                smpl_start_time = perf_counter()
+                torch.cuda.synchronize()
+                smpl_results, _ = get_smpl_hmr2_for_hsfm(
+                    model=smpl_hmr2_model,
+                    images=images,
+                    images_bboxes=images_bboxes,
+                    images_indices=images_indices,
+                    person_ids=person_ids,
+                    batch_size=1,
+                    show_progress=False,
+                )
+                torch.cuda.synchronize()
+                smpl_end_time = perf_counter()
 
-            # Convert the bboxes
-            images_bboxes_params_dict = {}
-            for image_idx, image_bboxes in zip(images_indices, images_bboxes):
-                images_bboxes_params_dict[image_idx] = {}
-                for person_id in person_ids:
-                    bbox_data = image_bboxes["labels"][str(person_id)]
-                    bbox = np.array(
-                        [
-                            bbox_data["x1"],
-                            bbox_data["y1"],
-                            bbox_data["x2"],
-                            bbox_data["y2"],
-                            1.0,
-                        ]
-                    )
-                    images_bboxes_params_dict[image_idx][person_id] = bbox
+                # Convert the bboxes
+                images_bboxes_params_dict = {}
+                for image_idx, image_bboxes in zip(images_indices, images_bboxes):
+                    images_bboxes_params_dict[image_idx] = {}
+                    for person_id in person_ids:
+                        bbox_data = image_bboxes["labels"][str(person_id)]
+                        bbox = np.array(
+                            [
+                                bbox_data["x1"],
+                                bbox_data["y1"],
+                                bbox_data["x2"],
+                                bbox_data["y2"],
+                                1.0,
+                            ]
+                        )
+                        images_bboxes_params_dict[image_idx][person_id] = bbox
 
-            hsfm_start_time = perf_counter()
-            torch.cuda.synchronize()
-            hsfm_results = align_world_env_and_smpl_hsfm(
-                world_env=world_env_results,
-                images_smplx_params_dict=smpl_results,
-                images_pose2d_params_dict=pose2d_results,
-                images_bboxes_params_dict=images_bboxes_params_dict,
-                images_sam2_mask_params_dict={},
-                smplx_layer_dict=smplx_layer_dict,
-                person_ids=person_ids,
-                body_model_name="smpl",
-                device=device,
-                verbose=False,
-                show_progress=False,
-            )
-            torch.cuda.synchronize()
-            hsfm_end_time = perf_counter()
+                hsfm_start_time = perf_counter()
+                torch.cuda.synchronize()
+                hsfm_results = align_world_env_and_smpl_hsfm(
+                    world_env=world_env_results,
+                    images_smplx_params_dict=smpl_results,
+                    images_pose2d_params_dict=pose2d_results,
+                    images_bboxes_params_dict=images_bboxes_params_dict,
+                    images_sam2_mask_params_dict={},
+                    smplx_layer_dict=smplx_layer_dict,
+                    person_ids=person_ids,
+                    body_model_name="smpl",
+                    device=device,
+                    verbose=False,
+                    show_progress=False,
+                )
+                torch.cuda.synchronize()
+                hsfm_end_time = perf_counter()
+            except Exception as e:
+                print(
+                    f"Error processing frame {frame_idx} for subject {subject_name} and subaction {subaction_name}. Writing empty results to {hsfm_output_path}: {e}"
+                )
+
+                with open(hsfm_output_path, "wb") as f:
+                    pickle.dump({}, f)
+
+                pbar.update(1)
+                continue
 
             timing_info = {
                 "n_views": len(images),
