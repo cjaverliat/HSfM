@@ -179,7 +179,7 @@ def main(
                     model=dust3r_model,
                     images=images,
                     images_indices=images_indices,
-                    verbose=False,
+                    verbose=True,
                 )
                 torch.cuda.synchronize()
                 world_env_end_time = perf_counter()
@@ -204,7 +204,7 @@ def main(
                     images_indices=images_indices,
                     person_ids=person_ids,
                     batch_size=1,
-                    show_progress=False,
+                    show_progress=True,
                 )
                 torch.cuda.synchronize()
                 smpl_end_time = perf_counter()
@@ -238,8 +238,8 @@ def main(
                     person_ids=person_ids,
                     body_model_name="smpl",
                     device=device,
-                    verbose=False,
-                    show_progress=False,
+                    verbose=True,
+                    show_progress=True,
                 )
                 torch.cuda.synchronize()
                 hsfm_end_time = perf_counter()
