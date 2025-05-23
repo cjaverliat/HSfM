@@ -251,6 +251,9 @@ def main(
                 with open(hsfm_output_path, "wb") as f:
                     pickle.dump({}, f)
 
+                with open(timing_info_path, "w") as f:
+                    json.dump({}, f)
+
                 pbar.update(1)
                 continue
 
