@@ -28,6 +28,7 @@ def main(
     output_dir: str = "./data_output/h36m/",
     sequences_start_idx: int = 0,
     sequences_end_idx: int = -1,
+    splits: list[str] = ["train", "val"],
     vis: bool = False,
 ):
     print("CUDA available: ", torch.cuda.is_available())
@@ -39,6 +40,8 @@ def main(
         os.path.join(processed_dataset_dir, "h36m_protocol1_sequences.json"), "rb"
     ) as f:
         sequences = orjson.loads(f.read())
+
+    sequences = [seq for seq in sequences if seq["split"] in splits]
 
     if sequences_end_idx == -1:
         sequences_end_idx = len(sequences)

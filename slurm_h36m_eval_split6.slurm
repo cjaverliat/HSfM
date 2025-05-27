@@ -23,7 +23,7 @@ module load pytorch-gpu/py3/2.0.1
 # echo of commands
 set -x
 
-srun python -u run_hsfm_h36m.py --processed-dataset-dir \
+srun python -u run_hsfm_h36m.py --splits val --processed-dataset-dir \
 /lustre/fsn1/projects/rech/rch/uoe13eg/datasets/h36m_processed_hsfm \
 --output-dir /lustre/fsn1/projects/rech/rch/uoe13eg/hsfm_h36m_eval \
 --sequences-start-idx 40 \
