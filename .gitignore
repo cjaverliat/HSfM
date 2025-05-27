@@ -3,6 +3,7 @@ demo_output/
 body_models/
 checkpoints/
 **.pyc**
+imgui.ini
 
 slurm_*.out
 .vscode/
