@@ -137,6 +137,7 @@ def preprocess_h36m(
                     "ground_truth",
                     f"{subject_name}_{subaction_name}.json",
                 ),
+                "split": split,
             }
         )
 
