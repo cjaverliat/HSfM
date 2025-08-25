@@ -1,7 +1,7 @@
 import json
 import pickle
 import torch
-from transformations import (
+from .transformations import (
     inverse_Rt,
     compute_similarity_transform,
     apply_similarity_transform_to_points,
