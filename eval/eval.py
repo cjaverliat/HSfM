@@ -297,11 +297,11 @@ def get_joints_from_smpl(
             pose2rot=False,
             return_verts=True,
         )
-    # Similar to what's done in the original code in vis_viser_hsfm.py
-    smplx_vertices = smpl_output.vertices
-    smplx_j3d = smpl_output.joints  # (1, J, 3), joints in the world coordinate from the world mesh decoded by the optimizing parameters
-    smplx_vertices = smplx_vertices - smplx_j3d[:, 0:1, :] + root_transl
-    smplx_j3d = smplx_j3d - smplx_j3d[:, 0:1, :] + root_transl
+        # Similar to what's done in the original code in vis_viser_hsfm.py
+        smplx_vertices = smpl_output.vertices
+        smplx_j3d = smpl_output.joints  # (1, J, 3), joints in the world coordinate from the world mesh decoded by the optimizing parameters
+        smplx_vertices = smplx_vertices - smplx_j3d[:, 0:1, :] + root_transl
+        smplx_j3d = smplx_j3d - smplx_j3d[:, 0:1, :] + root_transl
 
-    joints = vertices2joints(J_regressor, smplx_vertices)[0]
+        joints = vertices2joints(J_regressor, smplx_vertices)[0]
     return joints
